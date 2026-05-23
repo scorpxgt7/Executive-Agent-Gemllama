@@ -1,0 +1,56 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Helvetica Neue", Helvetica, Arial, "Inter", sans-serif;
+  --font-display: Georgia, serif;
+  --font-serif: Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #E4E3E0;
+  color: #141414;
+  overflow-x: hidden;
+}
+
+/* Hard high-contrast selection colors */
+::-webkit-selection {
+  background-color: #141414;
+  color: #E4E3E0;
+}
+::selection {
+  background-color: #141414;
+  color: #E4E3E0;
+}
+
+/* Brutalist Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #D6D5D1;
+  border-left: 1px solid #141414;
+}
+::-webkit-scrollbar-thumb {
+  background: #141414;
+  border: 1px solid #141414;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2a2a2a;
+}
+
+/* Utility shadow */
+.brutalist-shadow {
+  box-shadow: 3px 3px 0px 0px #141414;
+}
+
+.brutalist-shadow-sm {
+  box-shadow: 1.5px 1.5px 0px 0px #141414;
+}
+
+.brutalist-shadow-lg {
+  box-shadow: 5px 5px 0px 0px #141414;
+}

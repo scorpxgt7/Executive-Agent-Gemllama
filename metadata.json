@@ -1,0 +1,8 @@
+{
+  "name": "Remix: Gemma Affiliate Builder",
+  "description": "An interactive automation workspace to design affiliate campaign postings and construct functional landing pages using local Gemma or Google Gemini models.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
