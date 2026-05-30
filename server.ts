@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
+import { spawn, exec } from "child_process";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -11,6 +12,93 @@ const PORT = 3000;
 
 // Middleware
 app.use(express.json({ limit: "50mb" }));
+
+// Self-healing package installer and FastAPI background starter
+const startPythonFastAPI = () => {
+  console.log("[Node Server] Running Python environment check...");
+  
+  exec("python3 -c 'import fastapi, uvicorn, pydantic, structlog'", (err) => {
+    if (err) {
+      console.warn("[Node Server] Missing python packages. Attempting to install requirements...");
+      const pipInstall = spawn("pip", ["install", "-r", "requirements.txt"], {
+        cwd: process.cwd(),
+      });
+      pipInstall.stdout.on("data", (data) => console.log(`[pip] ${data.toString().trim()}`));
+      pipInstall.stderr.on("data", (data) => console.warn(`[pip-warn] ${data.toString().trim()}`));
+      pipInstall.on("close", (code) => {
+        if (code === 0) {
+          console.log("[Node Server] Python requirements installed successfully! Starting FastAPI server...");
+          launchProcess();
+        } else {
+          console.error(`[Node Server] Python package installation failed with exit code ${code}. Trying to launch anyway.`);
+          launchProcess();
+        }
+      });
+    } else {
+      console.log("[Node Server] All Python packages verified. Starting FastAPI server on port 8000...");
+      launchProcess();
+    }
+  });
+
+  const launchProcess = () => {
+    const fastapiProcess = spawn("python3", ["-m", "uvicorn", "api.main:app", "--host", "127.0.0.1", "--port", "8000", "--workers", "1"], {
+      cwd: process.cwd(),
+      env: { ...process.env, PYTHONPATH: process.cwd() }
+    });
+
+    fastapiProcess.stdout.on("data", (data) => {
+      console.log(`[Python FastAPI] ${data.toString().trim()}`);
+    });
+
+    fastapiProcess.stderr.on("data", (data) => {
+      console.warn(`[Python FastAPI Warn] ${data.toString().trim()}`);
+    });
+
+    fastapiProcess.on("close", (code) => {
+      console.warn(`[Node Server] Python FastAPI process shut down, exited with code ${code}`);
+    });
+  };
+};
+
+// Start Python service in background
+startPythonFastAPI();
+
+// Proxy API requests directly to local Python FastAPI backend
+app.all("/api/v1/*", async (req, res) => {
+  try {
+    const targetUrl = `http://127.0.0.1:8000${req.originalUrl}`;
+    
+    // Prepare headers for forwarding
+    const headers: Record<string, string> = {
+      "content-type": "application/json"
+    };
+    
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (typeof value === "string") {
+        headers[key] = value;
+      }
+    }
+    
+    const fetchOptions: RequestInit = {
+      method: req.method,
+      headers: headers,
+    };
+    
+    if (["POST", "PUT", "PATCH"].includes(req.method) && req.body) {
+      fetchOptions.body = JSON.stringify(req.body);
+    }
+    
+    const response = await fetch(targetUrl, fetchOptions);
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error: any) {
+    console.error("[Node Server] Proxy to Python on port 8000 failed, returning fallback:", error.message);
+    res.status(503).json({
+      error: "Executive Agent Platform background engine is currently booting up, please wait...",
+      details: error.message
+    });
+  }
+});
 
 // Initialize Gemini Client safely with telemetry header
 const getGeminiClient = () => {

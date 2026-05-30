@@ -39,6 +39,7 @@ import {
   McpServer,
   CustomPlugin
 } from "./types";
+import { TaskDependencyTree } from "./components/TaskDependencyTree";
 
 // Setup some creative template mocks for instant testing
 const AFFILIATE_TEMPLATES = [
@@ -241,6 +242,188 @@ export default function App() {
       { id: "lead-2", email: "tinker.indie@devnet.dev", name: "Indie Maker", capturedAt: "02:15 PM", offerName: "Apex Coffee Subscription Club" }
     ];
   });
+
+  // ================= EXECUTIVE AGENTS PLATFORM INTEGRATION STATES =================
+  const [executiveViewMode, setExecutiveViewMode] = useState<"dashboard" | "specs">("dashboard");
+  const [executiveGoals, setExecutiveGoals] = useState<any[]>([]);
+  const [selectedExecutiveGoalId, setSelectedExecutiveGoalId] = useState<string | null>(null);
+  const [activeExecutivePlan, setActiveExecutivePlan] = useState<any | null>(null);
+  const [executiveAgents, setExecutiveAgents] = useState<any[]>([]);
+  const [executiveApprovals, setExecutiveApprovals] = useState<any[]>([]);
+  const [executiveStats, setExecutiveStats] = useState<any>({
+    total_goals: 0,
+    active_goals: 0,
+    completed_goals: 0,
+    failed_goals: 0,
+    total_tasks: 0,
+    completed_tasks: 0,
+    executing_tasks: 0,
+    active_agents: 4
+  });
+  const [executiveLogs, setExecutiveLogs] = useState<any[]>([]);
+  const [isCreatingGoal, setIsCreatingGoal] = useState(false);
+  const [goalForm, setGoalForm] = useState({
+    description: "Launch autonomous research for wellness trends & generate campaign page",
+    objectives: "1. Scrape top biohacking products from wellness hubs\n2. Perform copy positioning evaluation\n3. Build landing layout template on port 3000"
+  });
+  const [taskExecutionResults, setTaskExecutionResults] = useState<Record<string, any>>({});
+  const [isExecutingTask, setIsExecutingTask] = useState<Record<string, boolean>>({});
+
+  // Sync / refresh operational telemetry and data queues from FastAPI backend
+  const refreshExecutiveTelemetry = async () => {
+    try {
+      // 1. Fetch system monitoring stats and logs
+      const statsRes = await fetch("/api/v1/monitoring/");
+      if (statsRes.ok) {
+        const statsData = await statsRes.json();
+        if (statsData.system_stats) setExecutiveStats(statsData.system_stats);
+        if (statsData.logs) setExecutiveLogs(statsData.logs);
+      }
+
+      // 2. Fetch goals
+      const goalsRes = await fetch("/api/v1/goals/");
+      if (goalsRes.ok) {
+        const goalsData = await goalsRes.json();
+        setExecutiveGoals(goalsData);
+        
+        // Auto-select first goal if none selected
+        if (goalsData.length > 0 && !selectedExecutiveGoalId) {
+          setSelectedExecutiveGoalId(goalsData[0].id);
+        }
+      }
+
+      // 3. Fetch specific execution plan if goal is loaded
+      if (selectedExecutiveGoalId) {
+        const planRes = await fetch(`/api/v1/goals/${selectedExecutiveGoalId}`);
+        if (planRes.ok) {
+          const detail = await planRes.json();
+          setActiveExecutivePlan(detail.plan);
+        }
+      }
+
+      // 4. Fetch registered agent structures
+      const agentsRes = await fetch("/api/v1/agents/");
+      if (agentsRes.ok) {
+        const agentsData = await agentsRes.json();
+        setExecutiveAgents(agentsData);
+      }
+
+      // 5. Fetch open system approvals requiring checks
+      const approvalsRes = await fetch("/api/v1/approvals/");
+      if (approvalsRes.ok) {
+        const approvalsData = await approvalsRes.json();
+        setExecutiveApprovals(approvalsData);
+      }
+    } catch (err: any) {
+      console.warn("FastAPI backend connection warning (still booting or offline):", err.message);
+    }
+  };
+
+  // Trigger telemetry refresh periodically when in the blueprint/agent view
+  useEffect(() => {
+    refreshExecutiveTelemetry();
+    const interval = setInterval(() => {
+      if (activeTab === "blueprint") {
+        refreshExecutiveTelemetry();
+      }
+    }, 4500);
+    return () => clearInterval(interval);
+  }, [activeTab, selectedExecutiveGoalId]);
+
+  // Handle Dispatch of a brand new Goal from user input
+  const handleDispatchGoal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!goalForm.description.trim()) return;
+    setIsCreatingGoal(true);
+
+    try {
+      const objectivesList = goalForm.objectives
+        .split("\n")
+        .map(obj => obj.trim())
+        .filter(obj => obj.length > 0);
+
+      const res = await fetch("/api/v1/goals/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          description: goalForm.description,
+          objectives: objectivesList,
+          constraints: { local_only: true }
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setSelectedExecutiveGoalId(data.goal_id);
+        setGoalForm({
+          description: "Analyze competitor pricing sheets and auto-draft promotional posts",
+          objectives: "1. Download prices from index links\n2. Rewrite pricing drafts using Gemma tone analyzer\n3. Append to schedule queue"
+        });
+        await refreshExecutiveTelemetry();
+        alert("🎯 Strategic Goal Dispatched successfully! Multi-phase Execution Plan formulated by your local Planner!");
+      } else {
+        alert("Failed to create goal. Check if the backend is initializing.");
+      }
+    } catch (err: any) {
+      alert(`Error submitting goal: ${err.message}`);
+    } finally {
+      setIsCreatingGoal(false);
+    }
+  };
+
+  // Manually trigger execution on an individual plan task using Python worker agents
+  const handleExecuteTask = async (taskId: string) => {
+    setIsExecutingTask(prev => ({ ...prev, [taskId]: true }));
+    try {
+      const res = await fetch(`/api/v1/tasks/${taskId}/execute`, {
+        method: "POST"
+      });
+      if (res.ok) {
+        const resultData = await res.json();
+        setTaskExecutionResults(prev => ({ ...prev, [taskId]: resultData }));
+        await refreshExecutiveTelemetry();
+      } else {
+        alert("Task execution call failed. Endpoint returned an error status.");
+      }
+    } catch (err: any) {
+      alert(`Task execution failed: ${err.message}`);
+    } finally {
+      setIsExecutingTask(prev => ({ ...prev, [taskId]: false }));
+    }
+  };
+
+  // Perform operational administrative approval action
+  const handleActionApproval = async (approvalId: string, action: "approve" | "reject") => {
+    try {
+      const res = await fetch(`/api/v1/approvals/${approvalId}/action`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action })
+      });
+      if (res.ok) {
+        await refreshExecutiveTelemetry();
+        alert(`Approval request successfully ${action}ed!`);
+      } else {
+        alert("Approval submission returned an error.");
+      }
+    } catch (err: any) {
+      alert(`Approval error: ${err.message}`);
+    }
+  };
+
+  const handleToggleAgent = async (agentId: string) => {
+    try {
+      const res = await fetch(`/api/v1/agents/${agentId}/toggle`, {
+        method: "POST"
+      });
+      if (res.ok) {
+        await refreshExecutiveTelemetry();
+      }
+    } catch (err: any) {
+      console.error("Failed to toggle agent active capability:", err.message);
+    }
+  };
+
 
   // Synchronize configuration to localStorage
   useEffect(() => {
@@ -2612,56 +2795,424 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                         ))}
                       </div>
                     )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 4: THE IMPROVEMENT BLUEPRINT */}
+           {/* TAB 4: THE IMPROVEMENT BLUEPRINT & AUTOMATED CO-PILOT OPERATIVE HUB */}
           {activeTab === "blueprint" && (
-            <div className="max-w-4xl mx-auto flex flex-col gap-6">
+            <div className="max-w-6xl mx-auto flex flex-col gap-6 w-full px-2">
               
-              {/* Document Banner */}
-              <div className="bg-[#F5F4F0] border-2 border-[#141414] p-6 rounded-none brutalist-shadow relative overflow-hidden select-none">
-                
-                <div className="flex items-center gap-3 border-b-2 border-[#141414] pb-4 mb-6">
-                  <BookOpen className="w-6 h-6 text-[#F27D26]" />
-                  <div>
-                    <h2 className="font-serif italic font-extrabold text-lg text-[#141414]">Interface Improvement & Local Automation Blueprint</h2>
-                    <p className="text-[10px] uppercase text-[#141414]/60 font-mono font-bold">Modernizing static assets into a high-concurrency automated publishing machine</p>
-                  </div>
-                </div>
+              {/* Operator Tab Piles */}
+              <div className="flex gap-2.5 border-b-2 border-[#141414] pb-4">
+                <button
+                  onClick={() => setExecutiveViewMode("dashboard")}
+                  className={`px-5 py-3 font-mono font-extrabold text-xs uppercase tracking-wide border-2 border-[#141414] transition-all cursor-pointer flex items-center gap-2 ${
+                    executiveViewMode === "dashboard"
+                      ? "bg-[#141414] text-[#E4E3E0] brutalist-shadow-sm"
+                      : "bg-[#F5F4F0] text-[#141414] hover:bg-[#141414]/5"
+                  }`}
+                >
+                  <Cpu className="w-4 h-4 text-[#F27D26]" />
+                  Operational Hub (Live Control)
+                </button>
+                <button
+                  onClick={() => setExecutiveViewMode("specs")}
+                  className={`px-5 py-3 font-mono font-extrabold text-xs uppercase tracking-wide border-2 border-[#141414] transition-all cursor-pointer flex items-center gap-2 ${
+                    executiveViewMode === "specs"
+                      ? "bg-[#141414] text-[#E4E3E0] brutalist-shadow-sm"
+                      : "bg-[#F5F4F0] text-[#141414] hover:bg-[#141414]/5"
+                  }`}
+                >
+                  <BookOpen className="w-4 h-4 text-[#F27D26]" />
+                  Architecture Specs
+                </button>
+              </div>
 
-                <div className="flex flex-col gap-6 text-[#141414] text-xs leading-relaxed font-sans">
+              {/* VIEW 1: OPERATOR HUB (LIVE SYSTEM CONTROLLER) */}
+              {executiveViewMode === "dashboard" && (
+                <div className="flex flex-col gap-6">
                   
-                  {/* Proposal Summary */}
-                  <div className="bg-[#D6D5D1] p-5 rounded-none border-2 border-[#141414]">
-                    <h3 className="font-mono font-extrabold text-sm text-[#141414] mb-2 flex items-center gap-2 uppercase tracking-wide">
-                      <Zap className="w-4 h-4 text-[#F27D26]" />
-                      Executive Objective: From Client Static to Automated System
-                    </h3>
-                    <p className="text-xs text-[#141414]/90 leading-relaxed font-sans font-medium">
-                      Your current local file <code className="bg-white px-1 py-0.5 border border-[#141414] font-bold">file:///C:/Windows/System32/GEMMA_INTERFACE.html</code> operates as a static client presentation layer. To automate affiliate posting and build landing pages seamlessly on your device, we propose creating custom <b>node-cron workflows</b> and <b>local static file-system hooks</b> that invoke your local Gemma backend fully offline.
-                    </p>
+                  {/* System Overview Widgets */}
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="bg-white border-2 border-[#141414] p-4 brutalist-shadow-xs relative">
+                      <span className="text-[9px] font-mono text-[#141414]/55 uppercase font-bold block mb-1">Missions Dispatched</span>
+                      <span className="text-2xl font-mono font-black text-[#141414] tracking-tight">{executiveStats?.total_goals ?? executiveGoals.length ?? 0}</span>
+                      <span className="absolute right-3.5 bottom-3 text-[#141414]/20"><Plus className="w-6 h-6" /></span>
+                    </div>
+                    <div className="bg-[#FFFCE8] border-2 border-[#141414] p-4 brutalist-shadow-xs relative">
+                      <span className="text-[9px] font-mono text-amber-950 uppercase font-bold block mb-1">Active Pipeline Jobs</span>
+                      <span className="text-2xl font-mono font-black text-amber-950 tracking-tight">{executiveStats?.executing_tasks || 0}</span>
+                      <span className="absolute right-3.5 bottom-3 text-[#141414]/20"><Activity className="w-6 h-6 text-[#F27D26]" /></span>
+                    </div>
+                    <div className="bg-[#EBFDF5] border-2 border-[#141414] p-4 brutalist-shadow-xs relative">
+                      <span className="text-[9px] font-mono text-emerald-950 uppercase font-bold block mb-1">Worker Jobs Met</span>
+                      <span className="text-2xl font-mono font-black text-emerald-800 tracking-tight">{executiveStats?.completed_tasks || 0}</span>
+                      <span className="absolute right-3.5 bottom-3 text-[#141414]/20"><Check className="w-6 h-6" /></span>
+                    </div>
+                    <div className="bg-[#EBEFFF] border-2 border-[#141414] p-4 brutalist-shadow-xs relative text-[#141414]">
+                      <span className="text-[9px] font-mono text-[#141414]/65 uppercase font-bold block mb-1">Active AI Operators</span>
+                      <span className="text-2xl font-mono font-black text-[#141414] tracking-tight">{executiveStats?.active_agents || (executiveAgents.length || 4)}</span>
+                      <span className="absolute right-3.5 bottom-3 text-[#141414]/20"><Cpu className="w-6 h-6" /></span>
+                    </div>
                   </div>
 
-                  {/* Architecture Plan */}
-                  <div className="font-mono">
-                    <h3 className="font-serif italic font-extrabold text-[#141414] text-base mb-3 leading-tight">
-                      Phase 1: Automated Affiliate Dispatch Pipeline
-                    </h3>
-                    <p className="text-xs text-[#141414]/80 mb-3 font-sans">
-                      Instead of copy-pasting, execute a background scheduler that reads a local inventory ledger, queries your local Gemma model for optimized post variations, and appends them to automated publishing brokers.
-                    </p>
-
-                    <div className="bg-white p-4 rounded-none border-2 border-[#141414]">
-                      <div className="flex items-center justify-between mb-2 pb-1 border-b border-[#141414]/10">
-                        <span className="text-[9px] font-mono text-[#F27D26] uppercase font-extrabold block">
-                          POST_AUTOMATOR.JS (Local Daemon Process)
-                        </span>
+                  {/* Active Warnings & Approvals */}
+                  {executiveApprovals.length > 0 && (
+                    <div className="bg-[#FFEFE3] border-2 border-[#141414] p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                      <div className="flex gap-3">
+                        <span className="p-1.5 bg-[#F27D26] text-white border border-[#141414] font-mono font-bold text-xs select-none">!</span>
+                        <div>
+                          <p className="text-xs font-mono font-extrabold text-[#141414] uppercase tracking-wide">Administrative Action Needed ({executiveApprovals.length})</p>
+                          <p className="text-[11px] text-[#141414]/80 mt-0.5">The autonomous worker loop is paused waiting for strategic content and permission approvals.</p>
+                        </div>
                       </div>
-                      <pre className="text-[11px] text-[#141414] font-mono overflow-x-auto leading-relaxed max-h-72 bg-[#F5F4F0] p-3 rounded-none font-bold">
+                      <div className="flex gap-2.5 shrink-0 w-full sm:w-auto">
+                        {executiveApprovals.map(req => (
+                          <div key={req.id} className="flex gap-2 w-full">
+                            <button
+                              onClick={() => handleActionApproval(req.id, "approve")}
+                              className="w-full sm:w-auto px-4 py-2 bg-emerald-700 text-white font-mono font-extrabold text-[10px] uppercase tracking-wide border border-[#141414] hover:bg-emerald-800 cursor-pointer"
+                            >
+                              Approve Dispatch
+                            </button>
+                            <button
+                              onClick={() => handleActionApproval(req.id, "reject")}
+                              className="w-full sm:w-auto px-4 py-2 bg-red-700 text-white font-mono font-extrabold text-[10px] uppercase tracking-wide border border-[#141414] hover:bg-red-800 cursor-pointer"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Operational Layout Grid */}
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                    
+                    {/* Left Panel: Dispatch Mission Form */}
+                    <div className="lg:col-span-4 flex flex-col gap-4">
+                      
+                      {/* Active AI Core Agents Grid */}
+                      <div className="bg-[#D6D5D1]/45 border-2 border-[#141414] p-4">
+                        <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold block mb-3">
+                          AI Worker Registry ({executiveAgents.length || 4})
+                        </span>
+                        
+                        <div className="flex flex-col gap-2">
+                          {(executiveAgents.length > 0 ? executiveAgents : [
+                            { id: "planner", name: "Strategic Planner", role: "Planning & Strategy", active: true },
+                            { id: "researcher", name: "Research Analyst", role: "Competitor Scraping", active: true },
+                            { id: "marketer", name: "Content Marketer", role: "Tailwind & Copy Design", active: true },
+                            { id: "evaluator", name: "SEO Evaluator", role: "Analytics", active: true }
+                          ]).map(agent => (
+                            <div key={agent.id} className="bg-white border-2 border-[#141414] p-3 flex justify-between items-center bg-white">
+                              <div>
+                                <h4 className="font-mono font-extrabold text-xs uppercase flex items-center gap-1.5 text-[#141414]">
+                                  {agent.name}
+                                  <span className={`w-1.5 h-1.5 rounded-full ${agent.active ? "bg-emerald-600 animate-pulse" : "bg-gray-400"}`} />
+                                </h4>
+                                <span className="text-[9px] font-mono text-[#141414]/65 uppercase tracking-tight block">{agent.role}</span>
+                              </div>
+                              <button
+                                onClick={() => handleToggleAgent(agent.id)}
+                                className={`px-2 py-0.5 text-[9px] font-mono font-black border border-[#141414] transition-all cursor-pointer ${
+                                  agent.active 
+                                    ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-200"
+                                    : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                                }`}
+                              >
+                                {agent.active ? "Enabled" : "Disabled"}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Dispatch Goal Card */}
+                      <div className="bg-white border-2 border-[#141414] p-5 brutalist-shadow">
+                        <div className="mb-4 pb-2 border-b border-[#141414]/15">
+                          <h3 className="font-mono font-extrabold text-xs uppercase tracking-wide text-[#141414] flex items-center gap-2">
+                            <Zap className="w-4 h-4 text-[#F27D26]" /> Define Operational Goal
+                          </h3>
+                        </div>
+
+                        <form onSubmit={handleDispatchGoal} className="flex flex-col gap-4">
+                          <div>
+                            <label className="block text-[9px] font-mono font-extrabold text-[#141414] uppercase tracking-wider mb-1.5 font-bold">Describe Strategic Mission</label>
+                            <textarea
+                              rows={2}
+                              value={goalForm.description}
+                              onChange={e => setGoalForm({ ...goalForm, description: e.target.value })}
+                              className="w-full text-xs py-2 px-3 bg-[#F5F4F0] border-2 border-[#141414] rounded-none text-[#141414] font-sans focus:outline-none focus:bg-white font-medium"
+                              required
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-[9px] font-mono font-extrabold text-[#141414] uppercase tracking-wider mb-1.5 font-bold">Pipeline Targets (One per line)</label>
+                            <textarea
+                              rows={3}
+                              value={goalForm.objectives}
+                              onChange={e => setGoalForm({ ...goalForm, objectives: e.target.value })}
+                              className="w-full text-xs py-2 px-3 bg-[#F5F4F0] border-2 border-[#141414] rounded-none text-[#141414] font-mono font-bold focus:outline-none focus:bg-white"
+                              required
+                            />
+                          </div>
+
+                          <button
+                            type="submit"
+                            disabled={isCreatingGoal}
+                            className="w-full py-2.5 px-4 bg-[#F27D26] hover:bg-[#141414] text-[#141414] hover:text-white font-mono font-extrabold text-xs tracking-wider uppercase border-2 border-[#141414] transition-all brutalist-shadow-xs cursor-pointer flex items-center justify-center gap-2"
+                          >
+                            {isCreatingGoal ? (
+                              <>
+                                <RefreshCw className="w-4 h-4 animate-spin" />
+                                Planning Pipeline...
+                              </>
+                            ) : (
+                              <>
+                                <Play className="w-3.5 h-3.5 fill-[#141414] hover:fill-white" />
+                                Dispatch Mission
+                              </>
+                            )}
+                          </button>
+                        </form>
+                      </div>
+
+                    </div>
+
+                    {/* Right Panel: Plan Pipeline Actions */}
+                    <div className="lg:col-span-8 flex flex-col gap-4">
+                      
+                      <div className="bg-[#141414] text-[#E4E3E0] p-4 border-2 border-[#141414] flex justify-between items-center">
+                        <div>
+                          <span className="text-[10px] font-mono text-[#F27D26] uppercase font-extrabold block font-bold">System Status: ONLINE</span>
+                          <h3 className="font-serif italic font-extrabold text-white text-sm">Autonomous Task Orchestration Pipeline</h3>
+                        </div>
+                        <button
+                          onClick={refreshExecutiveTelemetry}
+                          className="p-2 bg-white/10 hover:bg-white/20 text-white border border-white/25 rounded-none cursor-pointer transition-all"
+                          title="Refresh server stats"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      {/* Goal selector tab */}
+                      {executiveGoals.length > 0 && (
+                        <div className="flex gap-1 overflow-x-auto bg-[#F5F4F0] border-2 border-[#141414] p-1.5">
+                          {executiveGoals.map(goal => (
+                            <button
+                              key={goal.id}
+                              onClick={() => setSelectedExecutiveGoalId(goal.id)}
+                              className={`px-3 py-1.5 font-mono text-[10px] uppercase font-bold text-[#141414] border shrink-0 cursor-pointer ${
+                                selectedExecutiveGoalId === goal.id
+                                  ? "bg-white border-[#141414] brutalist-shadow-xs"
+                                  : "bg-transparent border-transparent hover:bg-white/40"
+                              }`}
+                            >
+                              Goal {goal.id.replace("goal-", "").substring(0, 4)}: {goal.status}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Active execution plan tree */}
+                      <div className="bg-white border-2 border-[#141414] p-5">
+                        
+                        {!selectedExecutiveGoalId ? (
+                          <div className="p-12 text-center text-xs font-mono text-[#141414]/50 border-2 border-dashed border-[#141414]/25">
+                            No goal dispatched yet. Set up a strategic automation goal on the left to review its corresponding agent execution sequence!
+                          </div>
+                        ) : (
+                          <div className="flex flex-col gap-4">
+                            
+                            {/* Current selected goal outline */}
+                            {executiveGoals.find(g => g.id === selectedExecutiveGoalId) && (
+                              <div className="bg-[#D6D5D1]/25 border-l-4 border-[#F27D26] p-3">
+                                <span className="text-[9px] font-mono text-[#141414]/65 uppercase font-black block">Active Goal Context ({selectedExecutiveGoalId})</span>
+                                <p className="text-xs font-serif italic font-extrabold text-[#141414] mt-1 capitalize leading-relaxed">
+                                  "{executiveGoals.find(g => g.id === selectedExecutiveGoalId)?.description}"
+                                </p>
+                              </div>
+                            )}
+
+                            {/* D3 Dependency tree visualizer */}
+                            {activeExecutivePlan && activeExecutivePlan.tasks && activeExecutivePlan.tasks.length > 0 && (
+                              <TaskDependencyTree
+                                tasks={activeExecutivePlan.tasks}
+                                onExecuteTask={handleExecuteTask}
+                                isExecutingTask={isExecutingTask}
+                              />
+                            )}
+
+                            {/* Plan tasks breakdown list */}
+                            <div className="flex flex-col gap-3">
+                              <span className="text-[10px] font-mono uppercase font-black text-[#141414] block">Execution Blueprint Plan Tasks:</span>
+                              
+                              {(!activeExecutivePlan || !activeExecutivePlan.tasks || activeExecutivePlan.tasks.length === 0) ? (
+                                <div className="p-6 bg-[#F5F4F0] border-2 border-dashed border-[#141414]/15 rounded-none text-center text-xs font-mono text-[#141414]/55">
+                                  No planner execution steps returned. Run the goal daemon to formulate tasks.
+                                </div>
+                              ) : (
+                                <div className="flex flex-col gap-3">
+                                  {activeExecutivePlan.tasks.map((task: any, idx: number) => {
+                                    const running = isExecutingTask[task.id];
+                                    const hasResult = taskExecutionResults[task.id];
+                                    
+                                    return (
+                                      <div key={task.id} className="border-2 border-[#141414] bg-[#F5F4F0] p-4 flex flex-col gap-3 brutalist-shadow-xs">
+                                        
+                                        <div className="flex justify-between items-start gap-3">
+                                          <div>
+                                            <span className="text-[9px] font-mono text-[#141414]/60 uppercase font-bold">Step {idx + 1} — {task.type}</span>
+                                            <h4 className="font-mono font-extrabold text-xs uppercase text-[#141414] mt-0.5">{task.description}</h4>
+                                          </div>
+                                          
+                                          <span className={`inline-block px-2 py-0.5 text-[8px] font-mono font-extrabold border uppercase ${
+                                            task.status === "completed"
+                                              ? "bg-emerald-100 text-emerald-800 border-emerald-500"
+                                              : task.status === "failed"
+                                              ? "bg-red-100 text-red-800 border-red-500"
+                                              : task.status === "executing"
+                                              ? "bg-amber-100 text-amber-800 border-amber-500 animate-pulse"
+                                              : "bg-white text-[#141414]/80 border-gray-400"
+                                          }`}>
+                                            {task.status}
+                                          </span>
+                                        </div>
+
+                                        {/* Task parameters */}
+                                        {task.parameters && Object.keys(task.parameters).length > 0 && (
+                                          <div className="bg-white border p-2 text-[9px] font-mono text-[#141414]/75 select-all overflow-x-auto max-w-full">
+                                            Params: {JSON.stringify(task.parameters, null, 1)}
+                                          </div>
+                                        )}
+
+                                        {/* Trigger control */}
+                                        <div className="flex justify-between items-center border-t border-[#141414]/10 pt-3 mt-1.5/10">
+                                          <span className="text-[9px] font-mono text-[#141414]/55">Assigned Agent: <b className="uppercase text-[#141414]">{task.assigned_agent || "strategic-planner"}</b></span>
+                                          
+                                          <button
+                                            onClick={() => handleExecuteTask(task.id)}
+                                            disabled={running || task.status === "completed"}
+                                            className={`px-3 py-1 font-mono text-[9px] font-black uppercase tracking-wider border transition-all cursor-pointer flex items-center gap-1.5 ${
+                                              task.status === "completed"
+                                                ? "bg-emerald-100 border-emerald-500 text-emerald-950 opacity-70"
+                                                : running
+                                                ? "bg-[#141414] text-white border-[#141414]"
+                                                : "bg-[#141414] text-white hover:bg-[#F27D26] hover:text-[#141414] border-[#141414]"
+                                            }`}
+                                          >
+                                            {running ? (
+                                              <>
+                                                <RefreshCw className="w-3 h-3 animate-spin" />
+                                                Running Job...
+                                              </>
+                                            ) : task.status === "completed" ? (
+                                              <>
+                                                <Check className="w-3 h-3 text-emerald-700 font-extrabold" />
+                                                Completed Run
+                                              </>
+                                            ) : (
+                                              <>
+                                                <Zap className="w-3 h-3 text-[#F27D26]" />
+                                                Trigger Job Run
+                                              </>
+                                            )}
+                                          </button>
+                                        </div>
+
+                                        {/* Display result */}
+                                        {hasResult && (
+                                          <div className="bg-white border-2 border-[#141414] p-3 text-[10px] font-mono leading-relaxed mt-2 text-[#141414]">
+                                            <span className="text-[9px] text-[#F27D26] uppercase font-bold block border-b pb-1 mb-2">📥 Worker Response Output Payload</span>
+                                            <pre className="overflow-x-auto max-h-48 break-words select-all whitespace-pre-wrap">
+                                              {JSON.stringify(hasResult.result, null, 2)}
+                                            </pre>
+                                          </div>
+                                        )}
+
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                            </div>
+
+                          </div>
+                        )}
+
+                      </div>
+
+                      {/* Stream Live Logs */}
+                      <div className="bg-white border-2 border-[#141414] p-5">
+                        <span className="text-[10px] font-mono uppercase font-black text-[#141414] block mb-3">Live Log Stream (Telemetry logs):</span>
+                        
+                        <div className="bg-[#141414] text-[#E4E3E0] p-4 text-[10px] font-mono h-60 overflow-y-auto flex flex-col gap-2 rounded-none border-2 border-[#141414]">
+                          {executiveLogs.map((log, idx) => (
+                            <div key={idx} className="flex gap-2.5 items-start leading-relaxed font-bold border-b border-white/5 pb-1">
+                              <span className="text-[#F27D26] shrink-0 font-normal">[{log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : "00:00:00"}]</span>
+                              <span className={`px-1 text-[8px] border shrink-0 ${
+                                log.level === "WARNING" || log.level === "ERROR"
+                                  ? "bg-red-900 border-red-500 text-red-200"
+                                  : "bg-emerald-950 border-emerald-500 text-emerald-200"
+                              }`}>{log.level}</span>
+                              <span className="text-white shrink-0">[{log.component}]</span>
+                              <span className="text-white/80 shrink-1">{log.message || log.logs}</span>
+                            </div>
+                          ))}
+                          <div className="text-white/30 text-[9px] mt-1 italic text-center">--- End of real-time server stream queue ---</div>
+                        </div>
+                      </div>
+
+                    </div>
+
+                  </div>
+
+                </div>
+              )}
+
+              {/* VIEW 2: ORIGINAL ARCHITECTURE SPECS MANUAL */}
+              {executiveViewMode === "specs" && (
+                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-6 rounded-none brutalist-shadow relative overflow-hidden select-none">
+                  
+                  <div className="flex items-center gap-3 border-b-2 border-[#141414] pb-4 mb-6">
+                    <BookOpen className="w-6 h-6 text-[#F27D26]" />
+                    <div>
+                      <h2 className="font-serif italic font-extrabold text-lg text-[#141414]">Interface Improvement & Local Automation Blueprint</h2>
+                      <p className="text-[10px] uppercase text-[#141414]/60 font-mono font-bold">Modernizing static assets into a high-concurrency automated publishing machine</p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-6 text-[#141414] text-xs leading-relaxed font-sans font-semibold">
+                    
+                    {/* Proposal Summary */}
+                    <div className="bg-[#D6D5D1] p-5 rounded-none border-2 border-[#141414]">
+                      <h3 className="font-mono font-extrabold text-sm text-[#141414] mb-2 flex items-center gap-2 uppercase tracking-wide font-bold">
+                        <Zap className="w-4 h-4 text-[#F27D26]" />
+                        Executive Objective: From Client Static to Automated System
+                      </h3>
+                      <p className="text-xs text-[#141414]/90 leading-relaxed font-sans font-medium">
+                        Your current local file <code className="bg-white px-1 py-0.5 border border-[#141414] font-bold">file:///C:/Windows/System32/GEMMA_INTERFACE.html</code> operates as a static client presentation layer. To automate affiliate posting and build landing pages seamlessly on your device, we propose creating custom <b>node-cron workflows</b> and <b>local static file-system hooks</b> that invoke your local Gemma backend fully offline.
+                      </p>
+                    </div>
+
+                    {/* Architecture Plan */}
+                    <div className="font-mono">
+                      <h3 className="font-serif italic font-extrabold text-[#141414] text-base mb-3 leading-tight font-bold">
+                        Phase 1: Automated Affiliate Dispatch Pipeline
+                      </h3>
+                      <p className="text-xs text-[#141414]/80 mb-3 font-sans">
+                        Instead of copy-pasting, execute a background scheduler that reads a local inventory ledger, queries your local Gemma model for optimized post variations, and appends them to automated publishing brokers.
+                      </p>
+
+                      <div className="bg-white p-4 rounded-none border-2 border-[#141414]">
+                        <div className="flex items-center justify-between mb-2 pb-1 border-b border-[#141414]/10">
+                          <span className="text-[9px] font-mono text-[#F27D26] uppercase font-extrabold block font-bold">
+                            POST_AUTOMATOR.JS (Local Daemon Process)
+                          </span>
+                        </div>
+                        <pre className="text-[11px] text-[#141414] font-mono overflow-x-auto leading-relaxed max-h-72 bg-[#F5F4F0] p-3 rounded-none font-bold">
 {`const fetch = require('node-fetch');
 const cron = require('node-cron');
 const fs = require('fs');
@@ -2702,34 +3253,41 @@ cron.schedule('30 8 * * *', async () => {
   fs.appendFileSync('conversions_log.txt', \`\\n[POST AD - \${new Date().toISOString()}]\\n\${optimizedCopy}\\n\`);
   console.log("Post formulating written into localized catalog safely!");
 });`}
-                      </pre>
-                    </div>
-                  </div>
-
-                  {/* Landing Pages Roadmap */}
-                  <div>
-                    <h3 className="font-serif italic font-extrabold text-[#141414] text-base mb-3 leading-tight">
-                      Phase 2: Local Static Auto-Generated Page Distribution
-                    </h3>
-                    <p className="text-xs text-[#141414]/80 mb-3 leading-relaxed">
-                      To deploy Gemma-built landing assets instantaneously, run a delivery listener on your machine that maps custom path directories directly to your localized template compilation suite.
-                    </p>
-
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 font-mono text-[11px] text-[#141414]/90 select-none">
-                      <div className="p-3 bg-white border-2 border-[#141414] rounded-none">
-                        <span className="text-[#F27D26] font-extrabold block mb-1 uppercase text-[10px]">1. Generate Path</span>
-                        Sub-folders like <code>/dist/aura-ring</code> are written directly by your file generators dynamically.
-                      </div>
-                      <div className="p-3 bg-white border-2 border-[#141414] rounded-none">
-                        <span className="text-[#F27D26] font-extrabold block mb-1 uppercase text-[10px]">2. Listen Host</span>
-                        A light delivery daemon shares files over port <code>8080</code> for local cross-device test views instantly.
-                      </div>
-                      <div className="p-3 bg-white border-2 border-[#141414] rounded-none">
-                        <span className="text-[#F27D26] font-extrabold block mb-1 uppercase text-[10px]">3. Deploy Publish</span>
-                        A simple sync hook dispatches generated code updates straight to standard deployment pipelines on commit.
+                        </pre>
                       </div>
                     </div>
+
+                    {/* Landing Pages Roadmap */}
+                    <div>
+                      <h3 className="font-serif italic font-extrabold text-[#141414] text-base mb-3 leading-tight font-bold">
+                        Phase 2: Local Static Auto-Generated Page Distribution
+                      </h3>
+                      <p className="text-xs text-[#141414]/80 mb-3 leading-relaxed">
+                        To deploy Gemma-built landing assets instantaneously, run a delivery listener on your machine that maps custom path directories directly to your localized template compilation suite.
+                      </p>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 font-mono text-[11px] text-[#141414]/90 select-none font-bold">
+                        <div className="p-3 bg-white border-2 border-[#141414] rounded-none">
+                          <span className="text-[#F27D26] font-extrabold block mb-1 uppercase text-[10px]">1. Generate Path</span>
+                          Sub-folders like <code>/dist/aura-ring</code> are written directly by your file generators dynamically.
+                        </div>
+                        <div className="p-3 bg-white border-2 border-[#141414] rounded-none">
+                          <span className="text-[#F27D26] font-extrabold block mb-1 uppercase text-[10px]">2. Listen Host</span>
+                          A light delivery daemon shares files over port <code>8080</code> for local cross-device test views instantly.
+                        </div>
+                        <div className="p-3 bg-white border-2 border-[#141414] rounded-none">
+                          <span className="text-[#F27D26] font-extrabold block mb-1 uppercase text-[10px]">3. Deploy Publish</span>
+                          A simple sync hook dispatches generated code updates straight to standard deployment pipelines on commit.
+                        </div>
+                      </div>
+                    </div>
+
                   </div>
+                </div>
+              )}
+
+            </div>
+          )}                  </div>
 
                 </div>
               </div>
