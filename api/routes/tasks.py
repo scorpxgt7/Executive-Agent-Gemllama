@@ -83,3 +83,37 @@ async def execute_task(task_id: str, request: Request):
             "task_id": task_id,
             "error": str(e)
         }
+
+@router.post("/{task_id}/status", response_model=Dict[str, Any])
+async def update_task_status(task_id: str, payload: Dict[str, Any], request: Request):
+    """Manually update task status to force-fail, reset-to-pending, etc."""
+    status_str = payload.get("status")
+    if not status_str or status_str not in [TaskStatus.PENDING, TaskStatus.ASSIGNED, TaskStatus.EXECUTING, TaskStatus.COMPLETED, TaskStatus.FAILED]:
+        raise HTTPException(status_code=400, detail="Invalid status value")
+        
+    orchestrator = request.app.state.orchestrator
+    found_task = None
+    
+    if hasattr(orchestrator, "plan_store"):
+        for plan_id, plan in orchestrator.plan_store.items():
+            for task in plan.tasks:
+                if task.id == task_id:
+                    found_task = task
+                    break
+            if found_task:
+                break
+                
+    if not found_task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        
+    found_task.status = TaskStatus(status_str)
+    if status_str == TaskStatus.PENDING:
+        found_task.completed_at = None
+    else:
+        found_task.completed_at = datetime.now(timezone.utc)
+        
+    return {
+        "status": "success",
+        "task_id": task_id,
+        "new_status": found_task.status
+    }

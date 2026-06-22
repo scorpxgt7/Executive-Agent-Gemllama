@@ -163,7 +163,7 @@ Draft a high-performing post or thread specifically for the character limits and
 // API Route: Generate Landing Page Tailwind HTML
 app.post("/api/generate-landing", async (req, res) => {
   try {
-    const { offerName, valueProp, ctaText, features, audience, styleTheme } = req.body;
+    const { offerName, valueProp, ctaText, features, audience, styleTheme, affiliateLink, enableLeadCapture } = req.body;
 
     if (!offerName || !valueProp) {
       res.status(400).json({ error: "Offer name and main value proposition are required." });
@@ -177,18 +177,19 @@ Do not output anything other than pure HTML code inside.
 No introductory text, no conversational text, and no markdown wrapping code blocks (do not wrap in \`\`\`html). Output ONLY the raw HTML string beginning with \`<!DOCTYPE html>\` and ending with \`</html>\`.`;
 
     const instructions = `Generate a high-converting landing page for:
-- **Offer/Product Name**: ${offerName}
-- **Core Value Proposition**: ${valueProp}
+- **Offer/Product Name (Headline)**: ${offerName}
+- **Core Value Proposition (Body Copy)**: ${valueProp}
 - **Primary CTA Button Text**: ${ctaText || "Get Started Instantly"}
 - **Key Features / Selling Points**: ${features || "Premium benefits, automated support, and streamlined performance"}
 - **Target Audience**: ${audience || "General consumers / digital creators"}
 - **Design Theme / Aesthetic Style**: ${styleTheme || "SaaS Clean (Slate & Indigo)"}
 
 Requirements:
-1. Build a stunning Hero section with a modern badge ("#1 Automated Affiliate Tool"), bold typographic scaling, a clear subtitle reinforcing ${valueProp}, and high-contrast call-to-actions.
-2. Build a Features section showing standard modern grid layouts. Let each feature have a Lucide-like stylized block.
+1. Build a stunning Hero section with bold typographic scaling, a clear subtitle reinforcing ${valueProp}, and high-contrast call-to-actions.
+2. Build a Features section showing standard modern grid layouts. Let each feature have a stylized block.
 3. Build a social proof/testimonial slider or grid.
-4. Include a prominent email signup/capture form for lead gen or purchase redirects.
+${enableLeadCapture ? '4. Include a prominent email signup/capture form (Name, Email, Submit) for lead gen above the fold AND at the bottom of the page.\n' : ''}
+${affiliateLink ? `\nMake the primary CTA buttons or form actions link directly to this affiliate link: ${affiliateLink}` : ''}
 5. Code must be highly responsive with neat paddings, clean negative space, micro-shadows, and elegant color pairs.
 6. Make sure all external script links or assets work seamlessly (e.g., use Tailwind directly and standard free fonts).
 Your response MUST be raw HTML starting with \`<!DOCTYPE html>\` and ending with \`</html>\`.`;

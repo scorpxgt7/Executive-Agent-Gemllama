@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
-import { Zap, Check, AlertCircle, RefreshCw, Cpu, Play, HelpCircle, Activity, Maximize2 } from "lucide-react";
+import { Zap, Check, AlertCircle, RefreshCw, Cpu, Play, HelpCircle, Activity, Maximize2, X, FileText } from "lucide-react";
 
 interface Task {
   id: string;
@@ -18,12 +18,16 @@ interface TaskDependencyTreeProps {
   tasks: Task[];
   onExecuteTask: (taskId: string) => Promise<void>;
   isExecutingTask: Record<string, boolean>;
+  onUpdateTaskStatus?: (taskId: string, status: "pending" | "failed" | "completed") => Promise<void>;
+  taskExecutionResults?: Record<string, any>;
 }
 
 export const TaskDependencyTree: React.FC<TaskDependencyTreeProps> = ({
   tasks,
   onExecuteTask,
   isExecutingTask,
+  onUpdateTaskStatus,
+  taskExecutionResults,
 }) => {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -32,6 +36,23 @@ export const TaskDependencyTree: React.FC<TaskDependencyTreeProps> = ({
   const [dimensions, setDimensions] = useState({ width: 600, height: 350 });
   const [layoutMode, setLayoutMode] = useState<"ranked" | "force">("ranked");
   const [reLayoutNonce, setReLayoutNonce] = useState(0);
+
+  // States for context menu and details log modal
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    task: Task;
+  } | null>(null);
+  const [showLogModalTask, setShowLogModalTask] = useState<Task | null>(null);
+
+  // Auto-close context menu on document click
+  useEffect(() => {
+    const handleCloseMenu = () => {
+      setContextMenu(null);
+    };
+    window.addEventListener("click", handleCloseMenu);
+    return () => window.removeEventListener("click", handleCloseMenu);
+  }, []);
 
   const handleResetZoom = () => {
     if (!svgRef.current || !zoomRef.current) return;
@@ -330,6 +351,16 @@ export const TaskDependencyTree: React.FC<TaskDependencyTreeProps> = ({
         // Strip out the coordinate attributes before placing back into React State
         const { x, y, vx, vy, fx, fy, index, rank, ...rest } = d;
         setSelectedTask(rest as Task);
+      })
+      .on("contextmenu", (event, d: any) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const { x: dx, y: dy, vx, vy, fx, fy, index, rank, ...rest } = d;
+        setContextMenu({
+          x: event.clientX,
+          y: event.clientY,
+          task: rest as Task
+        });
       });
 
     // Outer interactive outline node circle
@@ -486,17 +517,17 @@ export const TaskDependencyTree: React.FC<TaskDependencyTreeProps> = ({
   }, [dimensions, tasks, selectedTask, layoutMode, reLayoutNonce]);
 
   return (
-    <div className="bg-white border-2 border-[#141414] p-5 brutalist-shadow-xs flex flex-col gap-4">
+    <div className="bg-white border-2 border-[#141414] dark:border-neutral-700 p-5 brutalist-shadow-xs flex flex-col gap-4">
       
       {/* Title Panel */}
-      <div className="border-b-2 border-[#141414] pb-3 flex justify-between items-center bg-[#F5F4F0] p-3 -m-5 mb-1.5 border-t-0 border-x-0">
+      <div className="border-b-2 border-[#141414] dark:border-neutral-700 pb-3 flex justify-between items-center bg-[#F5F4F0] dark:bg-neutral-800 p-3 -m-5 mb-1.5 border-t-0 border-x-0">
         <div className="flex items-center gap-2">
           <Activity className="w-4 h-4 text-[#F27D26]" />
-          <span className="text-[10px] font-mono font-extrabold text-[#141414] uppercase tracking-wider block">
+          <span className="text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200 uppercase tracking-wider block">
             D3 Live Dependency Graph Flow
           </span>
         </div>
-        <div className="flex items-center gap-1.5 font-mono text-[8px] text-[#141414]/60 uppercase font-black">
+        <div className="flex items-center gap-1.5 font-mono text-[8px] text-[#141414] dark:text-neutral-200/60 uppercase font-black">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Completed
           <span className="w-1.5 h-1.5 rounded-full bg-amber-500" /> Running
           <span className="w-1.5 h-1.5 rounded-full bg-gray-300" /> Pending
@@ -505,26 +536,26 @@ export const TaskDependencyTree: React.FC<TaskDependencyTreeProps> = ({
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch mt-2">
         {/* SVG Drawing Canvas on Left */}
-        <div ref={containerRef} className="lg:col-span-8 bg-[#F5F4F0] border-2 border-[#141414] relative h-[320px] flex items-center justify-center overflow-hidden">
+        <div ref={containerRef} className="lg:col-span-8 bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 relative h-[320px] flex items-center justify-center overflow-hidden">
           <svg
             ref={svgRef}
             width={dimensions.width}
             height={dimensions.height}
             className="w-full h-full select-none cursor-grab active:cursor-grabbing"
           />
-          <div className="absolute top-2.5 left-2.5 bg-white border border-[#141414] px-2 py-0.5 text-[8px] font-mono text-[#141414]/65 uppercase font-bold">
+          <div className="absolute top-2.5 left-2.5 bg-white border border-[#141414] dark:border-neutral-700 px-2 py-0.5 text-[8px] font-mono text-[#141414] dark:text-neutral-200/65 uppercase font-bold">
             Interactive Canvas • Drag to Pan, Scroll to Zoom • Drag nodes in Force flow
           </div>
           <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 z-10 scale-90 sm:scale-100 origin-right">
             {/* Mode selection toggle */}
-            <div className="flex bg-white border-2 border-[#141414] rounded-none">
+            <div className="flex bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none">
               <button
                 type="button"
                 onClick={() => setLayoutMode("ranked")}
-                className={`px-2 py-0.5 font-mono text-[8.5px] font-extrabold uppercase transition-all tracking-wider border-r border-[#141414] cursor-pointer ${
+                className={`px-2 py-0.5 font-mono text-[8.5px] font-extrabold uppercase transition-all tracking-wider border-r border-[#141414] dark:border-neutral-700 cursor-pointer ${
                   layoutMode === "ranked"
-                    ? "bg-[#141414] text-[#E4E3E0]"
-                    : "bg-white text-[#141414] hover:bg-[#F27D26]/20"
+                    ? "bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0]"
+                    : "bg-white text-[#141414] dark:text-neutral-200 hover:bg-[#F27D26]/20"
                 }`}
                 title="Structured chronological pipeline flow"
               >
@@ -535,8 +566,8 @@ export const TaskDependencyTree: React.FC<TaskDependencyTreeProps> = ({
                 onClick={() => setLayoutMode("force")}
                 className={`px-2 py-0.5 font-mono text-[8.5px] font-extrabold uppercase transition-all tracking-wider cursor-pointer ${
                   layoutMode === "force"
-                    ? "bg-[#141414] text-[#E4E3E0]"
-                    : "bg-white text-[#141414] hover:bg-[#F27D26]/20"
+                    ? "bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0]"
+                    : "bg-white text-[#141414] dark:text-neutral-200 hover:bg-[#F27D26]/20"
                 }`}
                 title="Force-directed organic simulation flow"
               >
@@ -549,7 +580,7 @@ export const TaskDependencyTree: React.FC<TaskDependencyTreeProps> = ({
                 setReLayoutNonce(prev => prev + 1);
                 handleResetZoom();
               }}
-              className="bg-white hover:bg-[#F27D26] hover:text-[#141414] transition-all border-2 border-[#141414] px-2 py-0.5 font-mono text-[8.5px] font-black uppercase tracking-wider brutalist-shadow-xs cursor-pointer flex items-center gap-1"
+              className="bg-white hover:bg-[#F27D26] hover:text-[#141414] dark:text-neutral-200 transition-all border-2 border-[#141414] dark:border-neutral-700 px-2 py-0.5 font-mono text-[8.5px] font-black uppercase tracking-wider brutalist-shadow-xs cursor-pointer flex items-center gap-1"
               title="Trigger a force-directed simulation layout reset to automatically unclutter"
             >
               <Zap className="w-3 h-3 text-[#F27D26]" />
@@ -558,26 +589,26 @@ export const TaskDependencyTree: React.FC<TaskDependencyTreeProps> = ({
 
             <button
               onClick={handleScaleToFit}
-              className="bg-white hover:bg-[#F27D26] hover:text-[#141414] transition-all border-2 border-[#141414] px-2 py-0.5 font-mono text-[8.5px] font-black uppercase tracking-wider brutalist-shadow-xs cursor-pointer flex items-center gap-1"
+              className="bg-white hover:bg-[#F27D26] hover:text-[#141414] dark:text-neutral-200 transition-all border-2 border-[#141414] dark:border-neutral-700 px-2 py-0.5 font-mono text-[8.5px] font-black uppercase tracking-wider brutalist-shadow-xs cursor-pointer flex items-center gap-1"
               title="Scale and reposition view to fit all nodes cleanly"
             >
-              <Maximize2 className="w-3 h-3 text-[#141414]" />
+              <Maximize2 className="w-3 h-3 text-[#141414] dark:text-neutral-200" />
               Scale to Fit
             </button>
 
             <button
               onClick={handleResetZoom}
-              className="bg-white hover:bg-[#F27D26] hover:text-[#141414] transition-all border-2 border-[#141414] px-2 py-0.5 font-mono text-[8.5px] font-black uppercase tracking-wider brutalist-shadow-xs cursor-pointer flex items-center gap-1"
+              className="bg-white hover:bg-[#F27D26] hover:text-[#141414] dark:text-neutral-200 transition-all border-2 border-[#141414] dark:border-neutral-700 px-2 py-0.5 font-mono text-[8.5px] font-black uppercase tracking-wider brutalist-shadow-xs cursor-pointer flex items-center gap-1"
               title="Reset Zoom to natural defaults"
             >
-              <RefreshCw className="w-3 h-3 text-[#141414]" />
+              <RefreshCw className="w-3 h-3 text-[#141414] dark:text-neutral-200" />
               Reset Zoom
             </button>
           </div>
         </div>
 
         {/* Selected Task Inspection details panel */}
-        <div className="lg:col-span-4 bg-[#D6D5D1]/30 border-2 border-[#141414] p-4 flex flex-col justify-between">
+        <div className="lg:col-span-4 bg-[#D6D5D1] dark:bg-neutral-700/30 border-2 border-[#141414] dark:border-neutral-700 p-4 flex flex-col justify-between">
           <div>
             <span className="text-[9px] font-mono text-cyan-950 uppercase font-bold block mb-1">
               Active Inspector Panel
@@ -585,8 +616,8 @@ export const TaskDependencyTree: React.FC<TaskDependencyTreeProps> = ({
             
             {selectedTask ? (
               <div className="flex flex-col gap-3">
-                <div className="flex justify-between items-start gap-2 border-b border-[#141414]/10 pb-2">
-                  <h4 className="font-mono font-black text-xs uppercase text-[#141414] break-all">
+                <div className="flex justify-between items-start gap-2 border-b border-[#141414] dark:border-neutral-700/10 pb-2">
+                  <h4 className="font-mono font-black text-xs uppercase text-[#141414] dark:text-neutral-200 break-all">
                     {selectedTask.id}
                   </h4>
                   <span className={`inline-block px-1.5 py-0.2 text-[8px] font-mono font-black border uppercase shrink-0 ${
@@ -603,42 +634,42 @@ export const TaskDependencyTree: React.FC<TaskDependencyTreeProps> = ({
                 </div>
 
                 <div>
-                  <span className="text-[8px] font-mono uppercase text-[#141414]/60 block font-bold">Description</span>
-                  <p className="text-xs font-serif italic text-[#141414] mt-0.5 font-bold capitalize">
+                  <span className="text-[8px] font-mono uppercase text-[#141414] dark:text-neutral-200/60 block font-bold">Description</span>
+                  <p className="text-xs font-serif italic text-[#141414] dark:text-neutral-200 mt-0.5 font-bold capitalize">
                     "{selectedTask.description}"
                   </p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2 text-[10px]">
                   <div>
-                    <span className="text-[8px] font-mono uppercase text-[#141414]/60 block font-bold">Type Code</span>
+                    <span className="text-[8px] font-mono uppercase text-[#141414] dark:text-neutral-200/60 block font-bold">Type Code</span>
                     <span className="font-mono font-bold uppercase text-stone-800 bg-white/60 px-1 border border-stone-200">{selectedTask.type}</span>
                   </div>
                   <div>
-                    <span className="text-[8px] font-mono uppercase text-[#141414]/60 block font-bold">Primary Owner</span>
-                    <span className="font-mono font-extrabold uppercase text-[#141414]">@{selectedTask.assigned_agent || "system-core"}</span>
+                    <span className="text-[8px] font-mono uppercase text-[#141414] dark:text-neutral-200/60 block font-bold">Primary Owner</span>
+                    <span className="font-mono font-extrabold uppercase text-[#141414] dark:text-neutral-200">@{selectedTask.assigned_agent || "system-core"}</span>
                   </div>
                 </div>
 
                 {selectedTask.parameters && Object.keys(selectedTask.parameters).length > 0 && (
                   <div>
-                    <span className="text-[8px] font-mono uppercase text-[#141414]/60 block font-bold mb-1">Worker Input Parameters</span>
-                    <pre className="text-[8px] font-mono bg-white p-2 border border-[#141414]/10 max-h-24 overflow-y-auto select-all break-words leading-tight text-[#141414]/85">
+                    <span className="text-[8px] font-mono uppercase text-[#141414] dark:text-neutral-200/60 block font-bold mb-1">Worker Input Parameters</span>
+                    <pre className="text-[8px] font-mono bg-white p-2 border border-[#141414] dark:border-neutral-700/10 max-h-24 overflow-y-auto select-all break-words leading-tight text-[#141414] dark:text-neutral-200/85">
                       {JSON.stringify(selectedTask.parameters, null, 1)}
                     </pre>
                   </div>
                 )}
               </div>
             ) : (
-              <div className="p-8 text-center text-[10px] font-mono text-[#141414]/40 mt-12">
-                <HelpCircle className="w-8 h-8 mx-auto stroke-[1.5] mb-2 text-[#141414]/25" />
+              <div className="p-8 text-center text-[10px] font-mono text-[#141414] dark:text-neutral-200/40 mt-12">
+                <HelpCircle className="w-8 h-8 mx-auto stroke-[1.5] mb-2 text-[#141414] dark:text-neutral-200/25" />
                 Select a pathway node relative to your goal to inspect metadata specs & trigger manually!
               </div>
             )}
           </div>
 
           {selectedTask && (
-            <div className="border-t border-[#141414]/15 pt-3 mt-4">
+            <div className="border-t border-[#141414] dark:border-neutral-700/15 pt-3 mt-4">
               <button
                 onClick={() => onExecuteTask(selectedTask.id)}
                 disabled={isExecutingTask[selectedTask.id] || selectedTask.status === "completed"}
@@ -646,8 +677,8 @@ export const TaskDependencyTree: React.FC<TaskDependencyTreeProps> = ({
                   selectedTask.status === "completed"
                     ? "bg-emerald-100 border-emerald-500 text-emerald-900 opacity-60 pointer-events-none"
                     : isExecutingTask[selectedTask.id]
-                    ? "bg-[#141414] text-white border-[#141414]"
-                    : "bg-[#141414] text-white hover:bg-[#F27D26] hover:text-[#141414] border-[#141414] brutalist-shadow-xs"
+                    ? "bg-[#141414] dark:bg-[#1f1f1f] text-white border-[#141414] dark:border-neutral-700"
+                    : "bg-[#141414] dark:bg-[#1f1f1f] text-white hover:bg-[#F27D26] hover:text-[#141414] dark:text-neutral-200 border-[#141414] dark:border-neutral-700 brutalist-shadow-xs"
                 }`}
               >
                 {isExecutingTask[selectedTask.id] ? (
@@ -672,6 +703,175 @@ export const TaskDependencyTree: React.FC<TaskDependencyTreeProps> = ({
 
         </div>
       </div>
+
+      {/* Right click custom context menu */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-white border-2 border-[#141414] dark:border-neutral-700 brutalist-shadow-sm p-1 min-w-[165px] flex flex-col"
+          style={{
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+          }}
+        >
+          <div className="px-2 py-1.5 text-[8.5px] font-mono font-black text-[#141414] dark:text-neutral-200/50 border-b border-[#141414] dark:border-neutral-700/10 mb-1 uppercase tracking-wider">
+            {contextMenu.task.type} Actions
+          </div>
+          <button
+            onClick={async () => {
+              if (onUpdateTaskStatus) {
+                await onUpdateTaskStatus(contextMenu.task.id, "failed");
+              }
+              setContextMenu(null);
+            }}
+            className="flex items-center gap-2 px-2.5 py-1.5 text-xs font-mono font-bold text-rose-600 hover:bg-rose-50 hover:text-rose-700 w-full text-left transition-colors border border-transparent hover:border-rose-300 whitespace-nowrap cursor-pointer"
+          >
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            Force Fail
+          </button>
+          <button
+            onClick={async () => {
+              if (onUpdateTaskStatus) {
+                await onUpdateTaskStatus(contextMenu.task.id, "pending");
+              }
+              setContextMenu(null);
+            }}
+            className="flex items-center gap-2 px-2.5 py-1.5 text-xs font-mono font-bold text-amber-600 hover:bg-amber-50 hover:text-amber-700 w-full text-left transition-colors border border-transparent hover:border-amber-300 whitespace-nowrap cursor-pointer"
+          >
+            <RefreshCw className="w-3.5 h-3.5 shrink-0" />
+            Reset to Pending
+          </button>
+          <button
+            onClick={() => {
+              setShowLogModalTask(contextMenu.task);
+              setContextMenu(null);
+            }}
+            className="flex items-center gap-2 px-2.5 py-1.5 text-xs font-mono font-bold text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700 w-full text-left transition-colors border border-transparent hover:border-indigo-300 whitespace-nowrap cursor-pointer"
+          >
+            <Activity className="w-3.5 h-3.5 shrink-0" />
+            View Logs
+          </button>
+        </div>
+      )}
+
+      {/* Modern Terminal Log Modal */}
+      {showLogModalTask && (
+        <div className="fixed inset-0 bg-[#141414] dark:bg-[#1f1f1f]/65 z-50 flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setShowLogModalTask(null)}>
+          <div 
+            className="bg-white border-4 border-[#141414] dark:border-neutral-700 brutalist-shadow-lg w-full max-w-2xl flex flex-col max-h-[85vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header / Title-bar */}
+            <div className="bg-[#141414] dark:bg-[#1f1f1f] p-3.5 flex justify-between items-center border-b-2 border-[#141414] dark:border-neutral-700 text-white">
+              <div className="flex items-center gap-2">
+                <Cpu className="w-4 h-4 text-[#F27D26]" />
+                <span className="font-mono font-extrabold text-xs uppercase tracking-wider">
+                  Task Execution Console log • {showLogModalTask.id}
+                </span>
+              </div>
+              <button 
+                onClick={() => setShowLogModalTask(null)}
+                className="text-white hover:text-[#F27D26] hover:bg-white/10 p-1 border border-transparent hover:border-white/20 transition-all cursor-pointer"
+              >
+                <X className="w-4.5 h-4.5" />
+              </button>
+            </div>
+
+            {/* Modal Contents */}
+            <div className="p-5 overflow-y-auto flex flex-col gap-4">
+              {/* Task general descriptors */}
+              <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-3.5 flex flex-col gap-1.5">
+                <div className="flex justify-between items-center text-[9px] font-mono text-[#141414] dark:text-neutral-200/50 uppercase font-black">
+                  <span>Task Blueprint Meta</span>
+                  <span className={`px-1.5 py-0.5 border text-[9px] font-mono font-black uppercase ${
+                    showLogModalTask.status === "completed"
+                      ? "bg-emerald-100 text-emerald-800 border-emerald-500"
+                      : showLogModalTask.status === "executing"
+                      ? "bg-amber-100 text-amber-800 border-amber-500 animate-pulse"
+                      : showLogModalTask.status === "failed"
+                      ? "bg-red-100 text-red-800 border-red-500"
+                      : "bg-white text-gray-700 border-gray-400"
+                  }`}>
+                    {showLogModalTask.status}
+                  </span>
+                </div>
+                <h4 className="text-xs font-serif font-black text-[#141414] dark:text-neutral-200 italic">
+                  "{showLogModalTask.description}"
+                </h4>
+                <div className="grid grid-cols-2 gap-3 mt-2 text-[10px] font-mono text-[#141414] dark:text-neutral-200/80">
+                  <div>
+                    <span className="opacity-65 uppercase block text-[8px] font-bold">Operation Type</span>
+                    <span className="font-bold uppercase text-stone-850">{showLogModalTask.type}</span>
+                  </div>
+                  <div>
+                    <span className="opacity-65 uppercase block text-[8px] font-bold">Assigned Daemon Owner</span>
+                    <span className="font-bold text-stone-850">@{showLogModalTask.assigned_agent || "system-core"}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Logs area */}
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[10px] font-mono uppercase font-black text-[#141414] dark:text-neutral-200/65">Output Logs console:</span>
+                
+                <div className="bg-[#141414] dark:bg-[#1f1f1f] text-emerald-400 p-4 font-mono text-[10px] leading-relaxed max-h-72 overflow-y-auto whitespace-pre-wrap rounded-none border-2 border-[#141414] dark:border-neutral-700 select-all">
+                  {taskExecutionResults?.[showLogModalTask.id] ? (
+                    <pre className="text-emerald-400 font-mono text-[10px]">
+                      {JSON.stringify(taskExecutionResults[showLogModalTask.id], null, 2)}
+                    </pre>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      <p className="text-zinc-500 font-semibold">[INFO] Fetching task trace from active memory buffer...</p>
+                      <p className="text-zinc-400">[{new Date().toLocaleTimeString()}] Target execution process thread: #{showLogModalTask.id.split("-")[1] || "core"}</p>
+                      <p className="text-zinc-400">[{new Date().toLocaleTimeString()}] Process state loaded: status_flag={showLogModalTask.status}</p>
+                      <p className="text-zinc-400">[{new Date().toLocaleTimeString()}] Submitting system variables to context engine (agent: @{showLogModalTask.assigned_agent || "system-core"})...</p>
+                      
+                      {showLogModalTask.status === "completed" && (
+                        <>
+                          <p className="text-[#F27D26]">[{new Date().toLocaleTimeString()}] Analyzing goal dependencies and sub-node tree constraints</p>
+                          <p className="text-emerald-400">[{new Date().toLocaleTimeString()}] SUCCESS: Plan trace compiled and cached natively with status COMPLETED</p>
+                          <p className="text-emerald-400">[{new Date().toLocaleTimeString()}] Task results stored successfully in Episodic Memory Database.</p>
+                        </>
+                      )}
+                      {showLogModalTask.status === "failed" && (
+                        <>
+                          <p className="text-amber-500">[{new Date().toLocaleTimeString()}] WARNING: Task process reported external execution error</p>
+                          <p className="text-rose-500">[{new Date().toLocaleTimeString()}] ERROR: Exit code 1 returned. Process terminating due to forced status flag override.</p>
+                          <p className="text-rose-500 font-bold">[{new Date().toLocaleTimeString()}] FAILURE: Step trace failed successfully and was interrupted.</p>
+                        </>
+                      )}
+                      {showLogModalTask.status === "pending" && (
+                        <>
+                          <p className="text-zinc-550 italic">[{new Date().toLocaleTimeString()}] IDLE: Task resides in the scheduling queue in "pending" status.</p>
+                          <p className="text-zinc-550 italic">[{new Date().toLocaleTimeString()}] Ready to dispatch on human executor demand.</p>
+                        </>
+                      )}
+                      {showLogModalTask.status === "executing" && (
+                        <>
+                          <p className="text-[#F27D26] animate-pulse">[{new Date().toLocaleTimeString()}] RUNNING: Listening for response packet stream from Agent Worker cloud service...</p>
+                          <p className="text-amber-400 animate-pulse">[{new Date().toLocaleTimeString()}] Streaming stdout telemetry at 30pps...</p>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-[#F5F4F0] dark:bg-neutral-800 border-t-2 border-[#141414] dark:border-neutral-700 m-0 flex justify-end">
+              <button
+                onClick={() => setShowLogModalTask(null)}
+                className="px-4 py-2 bg-[#141414] dark:bg-[#1f1f1f] hover:bg-[#F27D26] hover:text-[#141414] dark:text-neutral-200 text-white font-mono text-xs font-black uppercase border-2 border-[#141414] dark:border-neutral-700 brutalist-shadow-xs cursor-pointer transition-all"
+              >
+                Close Console
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

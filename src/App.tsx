@@ -28,7 +28,11 @@ import {
   TrendingUp,
   Link as LinkIcon,
   Clock,
-  Briefcase
+  Briefcase,
+  Cloud,
+  Moon,
+  Sun,
+  Wand2
 } from "lucide-react";
 import {
   ConnectionConfig,
@@ -40,6 +44,8 @@ import {
   CustomPlugin
 } from "./types";
 import { TaskDependencyTree } from "./components/TaskDependencyTree";
+import { GoogleDriveExplorer } from "./components/GoogleDriveExplorer";
+import { initAuth } from "./lib/firebase";
 
 // Setup some creative template mocks for instant testing
 const AFFILIATE_TEMPLATES = [
@@ -104,7 +110,21 @@ const LANDING_TEMPLATES = [
 
 export default function App() {
   // Navigation Tabs
-  const [activeTab, setActiveTab] = useState<"posting" | "landing" | "connection" | "blueprint">("posting");
+  const [activeTab, setActiveTab] = useState<"posting" | "landing" | "connection" | "blueprint" | "drive">("posting");
+
+  // Theme Toggle State
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    return (localStorage.getItem("theme") as "light" | "dark") || "light";
+  });
+
+  useEffect(() => {
+    if (theme === "dark") {
+      document.documentElement.classList.add("dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+    }
+    localStorage.setItem("theme", theme);
+  }, [theme]);
 
   // Local Gemma & Cloud Gemini Connection State
   const [connection, setConnection] = useState<ConnectionConfig>(() => {
@@ -135,20 +155,22 @@ export default function App() {
   const [isGeneratingPost, setIsGeneratingPost] = useState(false);
   const [copiedPost, setCopiedPost] = useState(false);
 
-  // State: Landing Page Form
   const [landingForm, setLandingForm] = useState({
     offerName: "",
     valueProp: "",
     ctaText: "",
     features: "",
     audience: "",
-    styleTheme: "Slate SaaS"
+    styleTheme: "Slate SaaS" as "Slate SaaS" | "Emerald E-Commerce" | "Amber Creative" | "Midnight Premium",
+    affiliateLink: "",
+    enableLeadCapture: false
   });
 
   const [generatedHtml, setGeneratedHtml] = useState<string>("");
   const [isGeneratingLanding, setIsGeneratingLanding] = useState(false);
   const [copiedHtml, setCopiedHtml] = useState(false);
   const [activePreviewTab, setActivePreviewTab] = useState<"preview" | "code">("preview");
+  const [isGeneratingField, setIsGeneratingField] = useState<Record<string, boolean>>({});
 
   // Interactive Live HTML editing reference
   const [landingHtmlEditor, setLandingHtmlEditor] = useState<string>("");
@@ -392,6 +414,24 @@ export default function App() {
     }
   };
 
+  // Update task status from dependency tree context menu (Force Fail, Reset to Pending, etc)
+  const handleUpdateTaskStatus = async (taskId: string, status: "pending" | "failed" | "completed") => {
+    try {
+      const res = await fetch(`/api/v1/tasks/${taskId}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status })
+      });
+      if (res.ok) {
+        await refreshExecutiveTelemetry();
+      } else {
+        alert("Failed to update task status.");
+      }
+    } catch (err: any) {
+      alert(`Error updating task status: ${err.message}`);
+    }
+  };
+
   // Perform operational administrative approval action
   const handleActionApproval = async (approvalId: string, action: "approve" | "reject") => {
     try {
@@ -424,6 +464,12 @@ export default function App() {
     }
   };
 
+
+  // Initialize Google / Firebase Auth
+  useEffect(() => {
+    const unsubscribe = initAuth();
+    return () => unsubscribe();
+  }, []);
 
   // Synchronize configuration to localStorage
   useEffect(() => {
@@ -876,6 +922,63 @@ Write optimized post. Make it persuasive, readable, with spacing, neat hashtags,
     }
   };
 
+  const autoGenerateLandingField = async (field: keyof typeof landingForm, contextHint: string) => {
+    if (!landingForm.audience && field !== "audience") {
+      alert("Please provide at least a Target Audience to generate relevant content.");
+      return;
+    }
+    
+    setIsGeneratingField(prev => ({ ...prev, [field]: true }));
+    try {
+      const prompt = `You are an expert copywriter. Generate a highly converting, concise text for the "${contextHint}" field of a landing page.
+Target Audience: ${landingForm.audience || "General consumers"}
+Current Info: ${landingForm[field] || "None provided"}
+Wait, ONLY output the generated raw text without explanations, without quotes, and without markdown headers.`;
+
+      let outText = "";
+
+      if (connection.provider === "local") {
+        const res = await fetch(connection.localEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: connection.localModelName,
+            prompt: prompt,
+            stream: false
+          })
+        });
+        if (!res.ok) throw new Error("Local model error");
+        const data = await res.json();
+        outText = data.response || data.text || "";
+      } else {
+        const res = await fetch("/api/generate-affiliate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            productName: "Landing Page Field API Proxy",
+            productDescription: `RAW_PROMPT:${prompt}`,
+            affiliateLink: "",
+            price: "",
+            keywords: "raw prompt passthrough",
+            platform: "X / Twitter",
+            tone: "Engaging",
+            style: "Standard Post"
+          })
+        });
+        if (!res.ok) throw new Error("Server model error");
+        const data = await res.json();
+        outText = data.text;
+      }
+
+      setLandingForm(prev => ({ ...prev, [field]: outText.trim() }));
+    } catch (err: any) {
+      console.error(err);
+      alert("Error generating field: " + err.message);
+    } finally {
+      setIsGeneratingField(prev => ({ ...prev, [field]: false }));
+    }
+  };
+
   const generateLandingPage = async () => {
     if (!landingForm.offerName || !landingForm.valueProp) {
       alert("Please fill in the Offer Name and Main Value Proposition first.");
@@ -890,12 +993,13 @@ Write optimized post. Make it persuasive, readable, with spacing, neat hashtags,
       if (connection.provider === "local") {
         // Query Local Gemma endpoint for HTML page directly
         const fullPrompt = `You are a talented Landing Page designer. Write a fully responsive, gorgeous single page landing HTML based strictly on:
-Offer: ${landingForm.offerName}
-Value Prop: ${landingForm.valueProp}
-CTA Text: ${landingForm.ctaText || "Get Started"}
-Features: ${landingForm.features}
+Offer (Headline): ${landingForm.offerName}
+Value Prop (Body Copy): ${landingForm.valueProp}
+Features (Benefit-driven Bullet Points): ${landingForm.features}
 Target Audience: ${landingForm.audience}
 Color Theme Schema: ${landingForm.styleTheme}
+${landingForm.enableLeadCapture ? '\nInclude a beautiful and functional Lead Capture form (name, email inputs, and a submit button) above the fold with clear spacing. Ensure the form is styled nicely.' : ''}
+${landingForm.affiliateLink ? `\nMake the primary CTA button or form submission action link directly to this affiliate link: ${landingForm.affiliateLink}` : `\nCTA Text for main buttons: ${landingForm.ctaText || "Get Started"}`}
 
 Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html> tags. Do not explain, do not add introductory markdown, start directly with <!DOCTYPE html>.`;
 
@@ -1024,25 +1128,36 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
   };
 
   return (
-    <div className="min-h-screen bg-[#E4E3E0] text-[#141414] flex flex-col font-sans selection:bg-[#141414] selection:text-[#E4E3E0]" id="main_dashboard">
+    <div className="min-h-screen bg-[#E4E3E0] dark:bg-neutral-900 text-[#141414] dark:text-neutral-200 flex flex-col font-sans selection:bg-[#141414] dark:bg-[#1f1f1f] selection:text-[#E4E3E0] dark:text-[#a0a0a0]" id="main_dashboard">
       
       {/* Upper Technical Title Banner - Brutalist Swiss High Density */}
-      <header className="border-b-2 border-[#141414] bg-[#D6D5D1] sticky top-0 z-50 px-4 py-2.5 flex flex-col lg:flex-row items-center justify-between gap-4 select-none">
+      <header className="border-b-2 border-[#141414] dark:border-neutral-700 bg-[#D6D5D1] dark:bg-neutral-700 sticky top-0 z-50 px-4 py-2.5 flex flex-col lg:flex-row items-center justify-between gap-4 select-none">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 bg-[#F27D26] rounded-full animate-pulse"></span>
-            <span className="font-serif italic font-bold tracking-tight text-lg text-[#141414]">GEMMA-OS / V2.1.9</span>
+            <span className="font-serif italic font-bold tracking-tight text-lg text-[#141414] dark:text-neutral-200">GEMMA-OS / V2.1.9</span>
           </div>
-          <div className="hidden sm:block h-5 w-[1px] bg-[#141414] opacity-20"></div>
-          <div className="hidden md:flex gap-4 text-[10px] uppercase font-mono font-bold tracking-tight text-[#141414] opacity-75">
+          <div className="hidden sm:block h-5 w-[1px] bg-[#141414] dark:bg-[#1f1f1f] opacity-20"></div>
+          <div className="hidden md:flex gap-4 text-[10px] uppercase font-mono font-bold tracking-tight text-[#141414] dark:text-neutral-200 opacity-75">
             <span>GPU: NVIDIA 4090 [42.1% LOAD]</span>
             <span>MEM: 18.4GB / 24GB</span>
             <span>TEMP: 64°C</span>
           </div>
         </div>
 
-        {/* Global LLM Provider Toggle Bar */}
-        <div className="bg-[#E4E3E0] border-2 border-[#141414] p-0.5 rounded-none flex items-center gap-1.5 brutalist-shadow-sm">
+        {/* Global Controls */}
+        <div className="flex items-center gap-3">
+          {/* Theme Toggle */}
+          <button
+            onClick={() => setTheme(prev => prev === "light" ? "dark" : "light")}
+            className="bg-[#E4E3E0] dark:bg-neutral-900 border-2 border-[#141414] dark:border-neutral-700 p-1.5 rounded-none flex items-center justify-center brutalist-shadow-sm hover:bg-[#F27D26] hover:text-[#141414] transition-all cursor-pointer text-[#141414] dark:text-neutral-200"
+            title="Toggle Dark Mode"
+          >
+            {theme === "light" ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+          </button>
+
+          {/* Global LLM Provider Toggle Bar */}
+          <div className="bg-[#E4E3E0] dark:bg-neutral-900 border-2 border-[#141414] dark:border-neutral-700 p-0.5 rounded-none flex items-center gap-1.5 brutalist-shadow-sm">
           <button
             onClick={() => {
               setConnection(prev => ({ ...prev, provider: "local" }));
@@ -1050,8 +1165,8 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
             }}
             className={`px-3 py-1 font-mono text-[11px] font-bold uppercase transition-all flex items-center gap-1.5 rounded-none ${
               connection.provider === "local"
-                ? "bg-[#141414] text-[#E4E3E0]"
-                : "text-[#141414] hover:bg-[#141414]/15"
+                ? "bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0]"
+                : "text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f]/15"
             }`}
           >
             <Terminal className="w-3.5 h-3.5" />
@@ -1061,13 +1176,14 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
             onClick={() => setConnection(prev => ({ ...prev, provider: "cloud" }))}
             className={`px-3 py-1 font-mono text-[11px] font-bold uppercase transition-all flex items-center gap-1.5 rounded-none ${
               connection.provider === "cloud"
-                ? "bg-emerald-700 text-[#E4E3E0]"
-                : "text-[#141414] hover:bg-[#141414]/15"
+                ? "bg-emerald-700 text-[#E4E3E0] dark:text-[#a0a0a0]"
+                : "text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f]/15"
             }`}
           >
             <Sparkles className="w-3.5 h-3.5" />
             Gemini Cloud
           </button>
+        </div>
         </div>
 
         {/* Quick Connection Status Indicators */}
@@ -1075,7 +1191,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
           {connection.provider === "local" ? (
             <button 
               onClick={testLocalOllamaConnection}
-              className={`flex items-center gap-2 px-3 py-1.5 bg-[#F5F4F0] border-2 border-[#141414] text-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] transition-all brutalist-shadow-sm uppercase ${isTestingLocal ? "opacity-70" : ""}`}
+              className={`flex items-center gap-2 px-3 py-1.5 bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f] hover:text-[#E4E3E0] dark:text-[#a0a0a0] transition-all brutalist-shadow-sm uppercase ${isTestingLocal ? "opacity-70" : ""}`}
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isTestingLocal ? "animate-spin" : ""}`} />
               Ollama: {connection.isConnected === true ? (
@@ -1083,7 +1199,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
               ) : connection.isConnected === false ? (
                 <span className="text-red-700 font-extrabold">● Setup Req</span>
               ) : (
-                <span className="text-[#141414]/60">● Check Status</span>
+                <span className="text-[#141414] dark:text-neutral-200/60">● Check Status</span>
               )}
             </button>
           ) : (
@@ -1099,13 +1215,13 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
         
         {/* Left Side System Navigation */}
-        <nav className="w-full md:w-64 border-b-2 md:border-b-0 md:border-r-2 border-[#141414] bg-[#D6D5D1] p-4 flex md:flex-col gap-2.5 overflow-x-auto md:overflow-x-visible">
+        <nav className="w-full md:w-64 border-b-2 md:border-b-0 md:border-r-2 border-[#141414] dark:border-neutral-700 bg-[#D6D5D1] dark:bg-neutral-700 p-4 flex md:flex-col gap-2.5 overflow-x-auto md:overflow-x-visible">
           <button
             onClick={() => setActiveTab("posting")}
             className={`w-full text-left px-3.5 py-2.5 rounded-none flex items-center gap-3 font-medium text-sm transition-all shrink-0 ${
               activeTab === "posting"
-                ? "bg-[#141414] text-[#E4E3E0] border border-[#141414] brutalist-shadow-sm"
-                : "text-[#141414] hover:bg-[#141414]/10 hover:text-[#141414] border border-transparent"
+                ? "bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] border border-[#141414] dark:border-neutral-700 brutalist-shadow-sm"
+                : "text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f]/10 hover:text-[#141414] dark:text-neutral-200 border border-transparent"
             }`}
           >
             <Layers className="w-4 h-4 shrink-0" />
@@ -1119,8 +1235,8 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
             onClick={() => setActiveTab("landing")}
             className={`w-full text-left px-3.5 py-2.5 rounded-none flex items-center gap-3 font-medium text-sm transition-all shrink-0 ${
               activeTab === "landing"
-                ? "bg-[#141414] text-[#E4E3E0] border border-[#141414] brutalist-shadow-sm"
-                : "text-[#141414] hover:bg-[#141414]/10 hover:text-[#141414] border border-transparent"
+                ? "bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] border border-[#141414] dark:border-neutral-700 brutalist-shadow-sm"
+                : "text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f]/10 hover:text-[#141414] dark:text-neutral-200 border border-transparent"
             }`}
           >
             <Globe className="w-4 h-4 shrink-0" />
@@ -1134,8 +1250,8 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
             onClick={() => setActiveTab("connection")}
             className={`w-full text-left px-3.5 py-2.5 rounded-none flex items-center gap-3 font-medium text-sm transition-all shrink-0 ${
               activeTab === "connection"
-                ? "bg-[#141414] text-[#E4E3E0] border border-[#141414] brutalist-shadow-sm"
-                : "text-[#141414] hover:bg-[#141414]/10 hover:text-[#141414] border border-transparent"
+                ? "bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] border border-[#141414] dark:border-neutral-700 brutalist-shadow-sm"
+                : "text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f]/10 hover:text-[#141414] dark:text-neutral-200 border border-transparent"
             }`}
           >
             <Settings className="w-4 h-4 shrink-0" />
@@ -1149,8 +1265,8 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
             onClick={() => setActiveTab("blueprint")}
             className={`w-full text-left px-3.5 py-2.5 rounded-none flex items-center gap-3 font-medium text-sm transition-all shrink-0 ${
               activeTab === "blueprint"
-                ? "bg-[#141414] text-[#E4E3E0] border border-[#141414] brutalist-shadow-sm"
-                : "text-[#141414] hover:bg-[#141414]/10 hover:text-[#141414] border border-transparent"
+                ? "bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] border border-[#141414] dark:border-neutral-700 brutalist-shadow-sm"
+                : "text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f]/10 hover:text-[#141414] dark:text-neutral-200 border border-transparent"
             }`}
           >
             <BookOpen className="w-4 h-4 shrink-0" />
@@ -1160,10 +1276,25 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
             </div>
           </button>
 
-          <div className="hidden md:block mt-auto pt-4 border-t border-[#141414]/15">
-            <div className="bg-[#E4E3E0] p-3 border border-[#141414] rounded-none text-center brutalist-shadow-sm">
+          <button
+            onClick={() => setActiveTab("drive")}
+            className={`w-full text-left px-3.5 py-2.5 rounded-none flex items-center gap-3 font-medium text-sm transition-all shrink-0 ${
+              activeTab === "drive"
+                ? "bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] border border-[#141414] dark:border-neutral-700 brutalist-shadow-sm"
+                : "text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f]/10 hover:text-[#141414] dark:text-neutral-200 border border-transparent"
+            }`}
+          >
+            <Cloud className="w-4 h-4 shrink-0 text-[#F27D26]" />
+            <div>
+              <p className="font-mono font-bold text-xs tracking-tight uppercase">GOOGLE DRIVE SYNC</p>
+              <p className="text-[9px] uppercase font-mono opacity-60 mt-0.5">Cloud Files & Backups</p>
+            </div>
+          </button>
+
+          <div className="hidden md:block mt-auto pt-4 border-t border-[#141414] dark:border-neutral-700/15">
+            <div className="bg-[#E4E3E0] dark:bg-neutral-900 p-3 border border-[#141414] dark:border-neutral-700 rounded-none text-center brutalist-shadow-sm">
               <span className="text-[9px] uppercase font-mono opacity-60">Running local time</span>
-              <p className="text-xs font-mono font-bold text-[#141414] mt-0.5">
+              <p className="text-xs font-mono font-bold text-[#141414] dark:text-neutral-200 mt-0.5">
                 2026-05-21
               </p>
             </div>
@@ -1171,7 +1302,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
         </nav>
 
         {/* Dynamic Panel Renderer */}
-        <main className="flex-1 bg-[#E4E3E0] p-4 lg:p-6 overflow-y-auto">
+        <main className="flex-1 bg-[#E4E3E0] dark:bg-neutral-900 p-4 lg:p-6 overflow-y-auto">
           
           {/* TAB 1: AFFILIATE DEPLOYMENT ENGINE */}
           {activeTab === "posting" && (
@@ -1179,46 +1310,46 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
               
               {/* Brutalist High-Density Stats Dashboard */}
               <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-3 rounded-none brutalist-shadow-sm">
-                  <span className="text-[9px] uppercase font-mono font-bold text-[#141414]/60 block mb-1">Active Ledger Hooks</span>
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-3 rounded-none brutalist-shadow-sm">
+                  <span className="text-[9px] uppercase font-mono font-bold text-[#141414] dark:text-neutral-200/60 block mb-1">Active Ledger Hooks</span>
                   <div className="flex items-baseline justify-between select-none">
-                    <span className="font-serif italic font-extrabold text-2xl text-[#141414]">{campaignHistory.length + 3}</span>
+                    <span className="font-serif italic font-extrabold text-2xl text-[#141414] dark:text-neutral-200">{campaignHistory.length + 3}</span>
                     <span className="text-[9px] font-mono font-bold text-emerald-700">+12%</span>
                   </div>
                 </div>
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-3 rounded-none brutalist-shadow-sm">
-                  <span className="text-[9px] uppercase font-mono font-bold text-[#141414]/60 block mb-1">Scheduled Posts</span>
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-3 rounded-none brutalist-shadow-sm">
+                  <span className="text-[9px] uppercase font-mono font-bold text-[#141414] dark:text-neutral-200/60 block mb-1">Scheduled Posts</span>
                   <div className="flex items-baseline justify-between select-none">
                     <span className="font-serif italic font-extrabold text-2xl text-[#111]">{scheduledPosts.length}</span>
                     <span className="text-[9px] font-mono font-bold text-[#F27D26] uppercase">In Queue</span>
                   </div>
                 </div>
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-3 rounded-none brutalist-shadow-sm">
-                  <span className="text-[9px] uppercase font-mono font-bold text-[#141414]/60 block mb-1">Total Impressions</span>
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-3 rounded-none brutalist-shadow-sm">
+                  <span className="text-[9px] uppercase font-mono font-bold text-[#141414] dark:text-neutral-200/60 block mb-1">Total Impressions</span>
                   <div className="flex items-baseline justify-between select-none">
-                    <span className="font-serif italic font-extrabold text-2xl text-[#141414]">{((campaignHistory.length * 1532) + 1205)}</span>
+                    <span className="font-serif italic font-extrabold text-2xl text-[#141414] dark:text-neutral-200">{((campaignHistory.length * 1532) + 1205)}</span>
                     <span className="text-[9px] font-mono font-bold text-emerald-700">▲ Live</span>
                   </div>
                 </div>
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-3 rounded-none brutalist-shadow-sm">
-                  <span className="text-[9px] uppercase font-mono font-bold text-[#141414]/60 block mb-1">Click Throughs (CTR)</span>
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-3 rounded-none brutalist-shadow-sm">
+                  <span className="text-[9px] uppercase font-mono font-bold text-[#141414] dark:text-neutral-200/60 block mb-1">Click Throughs (CTR)</span>
                   <div className="flex items-baseline justify-between select-none">
-                    <span className="font-serif italic font-extrabold text-2xl text-[#141414]">{((campaignHistory.length * 94) + 215)}</span>
-                    <span className="text-[9px] font-mono font-bold text-[#141414]">Rate: 6.2%</span>
+                    <span className="font-serif italic font-extrabold text-2xl text-[#141414] dark:text-neutral-200">{((campaignHistory.length * 94) + 215)}</span>
+                    <span className="text-[9px] font-mono font-bold text-[#141414] dark:text-neutral-200">Rate: 6.2%</span>
                   </div>
                 </div>
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-3 rounded-none brutalist-shadow-sm">
-                  <span className="text-[9px] uppercase font-mono font-bold text-[#141414]/60 block mb-1">Conversions Logged</span>
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-3 rounded-none brutalist-shadow-sm">
+                  <span className="text-[9px] uppercase font-mono font-bold text-[#141414] dark:text-neutral-200/60 block mb-1">Conversions Logged</span>
                   <div className="flex items-baseline justify-between select-none">
-                    <span className="font-serif italic font-extrabold text-2xl text-[#141414]">{((campaignHistory.length * 12) + 24)}</span>
+                    <span className="font-serif italic font-extrabold text-2xl text-[#141414] dark:text-neutral-200">{((campaignHistory.length * 12) + 24)}</span>
                     <span className="text-[9px] font-mono font-bold text-emerald-700">CR: 11.2%</span>
                   </div>
                 </div>
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-3 rounded-none brutalist-shadow-sm">
-                  <span className="text-[9px] uppercase font-mono font-bold text-[#141414]/60 block mb-1">Est. Accrued Commission</span>
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-3 rounded-none brutalist-shadow-sm">
+                  <span className="text-[9px] uppercase font-mono font-bold text-[#141414] dark:text-neutral-200/60 block mb-1">Est. Accrued Commission</span>
                   <div className="flex items-baseline justify-between select-none">
                     <span className="font-serif italic font-extrabold text-2xl text-[#F27D26]">${((campaignHistory.length * 34.50) + 125.80).toFixed(2)}</span>
-                    <span className="text-[9px] font-mono font-bold text-[#141414]/60">USD Offline</span>
+                    <span className="text-[9px] font-mono font-bold text-[#141414] dark:text-neutral-200/60">USD Offline</span>
                   </div>
                 </div>
               </div>
@@ -1229,8 +1360,8 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
               <div className="xl:col-span-5 flex flex-col gap-6">
                 
                 {/* Template Fast Match Section */}
-                <div className="bg-[#D6D5D1] border-2 border-[#141414] p-4 rounded-none brutalist-shadow-sm select-none">
-                  <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold flex items-center gap-1.5 pb-2 border-b border-[#141414]/15">
+                <div className="bg-[#D6D5D1] dark:bg-neutral-700 border-2 border-[#141414] dark:border-neutral-700 p-4 rounded-none brutalist-shadow-sm select-none">
+                  <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold flex items-center gap-1.5 pb-2 border-b border-[#141414] dark:border-neutral-700/15">
                     <Layers className="w-3.5 h-3.5 text-[#F27D26]" /> Key Catalogs / Fast Templates
                   </span>
                   <div className="grid grid-cols-3 gap-2 mt-3">
@@ -1238,9 +1369,9 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                       <button
                         key={id}
                         onClick={() => applyAffiliateTemplate(id)}
-                        className="text-left p-2 rounded-none bg-[#F5F4F0] border-2 border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] transition-all brutalist-shadow-sm group cursor-pointer"
+                        className="text-left p-2 rounded-none bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 hover:bg-[#141414] dark:bg-[#1f1f1f] hover:text-[#E4E3E0] dark:text-[#a0a0a0] transition-all brutalist-shadow-sm group cursor-pointer"
                       >
-                        <p className="text-[10px] uppercase font-bold text-[#141414] group-hover:text-inherit truncate">{item.productName}</p>
+                        <p className="text-[10px] uppercase font-bold text-[#141414] dark:text-neutral-200 group-hover:text-inherit truncate">{item.productName}</p>
                         <p className="text-[9px] font-mono uppercase opacity-65 group-hover:text-inherit mt-0.5 truncate">{item.platform}</p>
                       </button>
                     ))}
@@ -1249,24 +1380,24 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
 
 
                 {/* Local Affiliate Link Vault */}
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-4 rounded-none brutalist-shadow-sm select-none">
-                  <div className="flex items-center justify-between pb-2 border-b border-[#141414]/15">
-                    <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold flex items-center gap-1.5">
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-4 rounded-none brutalist-shadow-sm select-none">
+                  <div className="flex items-center justify-between pb-2 border-b border-[#141414] dark:border-neutral-700/15">
+                    <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold flex items-center gap-1.5">
                       <LinkIcon className="w-3.5 h-3.5 text-[#F27D26]" /> Local Affiliate Link Vault
                     </span>
-                    <span className="bg-[#F27D26] text-[#141414] px-1.5 py-0.5 text-[9px] font-extrabold uppercase">{savedLinks.length} Stored</span>
+                    <span className="bg-[#F27D26] text-[#141414] dark:text-neutral-200 px-1.5 py-0.5 text-[9px] font-extrabold uppercase">{savedLinks.length} Stored</span>
                   </div>
 
                   {/* Add link form */}
-                  <form onSubmit={handleAddSavedLink} className="mt-3 bg-[#D6D5D1]/40 p-3 border border-[#141414]/25 flex flex-col gap-2.5">
-                    <span className="text-[9px] font-mono uppercase font-bold text-[#141414]/80">Register New Affiliate URL</span>
+                  <form onSubmit={handleAddSavedLink} className="mt-3 bg-[#D6D5D1] dark:bg-neutral-700/40 p-3 border border-[#141414] dark:border-neutral-700/25 flex flex-col gap-2.5">
+                    <span className="text-[9px] font-mono uppercase font-bold text-[#141414] dark:text-neutral-200/80">Register New Affiliate URL</span>
                     <div className="grid grid-cols-2 gap-2">
                       <input
                         type="text"
                         placeholder="Link Label (e.g. Aura Ring)"
                         value={newLink.label}
                         onChange={e => setNewLink({ ...newLink, label: e.target.value })}
-                        className="text-[10px] p-2 bg-white border border-[#141414] focus:outline-none focus:bg-[#E4E3E0] font-sans rounded-none font-semibold text-[#141414]"
+                        className="text-[10px] p-2 bg-white border border-[#141414] dark:border-neutral-700 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900 font-sans rounded-none font-semibold text-[#141414] dark:text-neutral-200"
                         required
                       />
                       <input
@@ -1274,7 +1405,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                         placeholder="Category (e.g. Health)"
                         value={newLink.category}
                         onChange={e => setNewLink({ ...newLink, category: e.target.value })}
-                        className="text-[10px] p-2 bg-white border border-[#141414] focus:outline-none focus:bg-[#E4E3E0] font-sans rounded-none font-semibold text-[#141414]"
+                        className="text-[10px] p-2 bg-white border border-[#141414] dark:border-neutral-700 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900 font-sans rounded-none font-semibold text-[#141414] dark:text-neutral-200"
                       />
                     </div>
                     <input
@@ -1282,7 +1413,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                       placeholder="Affiliate URL (https://...)"
                       value={newLink.url}
                       onChange={e => setNewLink({ ...newLink, url: e.target.value })}
-                      className="text-[10px] p-2 bg-white border border-[#141414] focus:outline-none focus:bg-[#E4E3E0] font-mono rounded-none text-[#141414]"
+                      className="text-[10px] p-2 bg-white border border-[#141414] dark:border-neutral-700 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900 font-mono rounded-none text-[#141414] dark:text-neutral-200"
                       required
                     />
                     <div className="flex gap-2">
@@ -1291,11 +1422,11 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                         placeholder="Brief notes (optional)"
                         value={newLink.description}
                         onChange={e => setNewLink({ ...newLink, description: e.target.value })}
-                        className="text-[10px] p-2 bg-white border border-[#141414] focus:outline-none focus:bg-[#E4E3E0] flex-1 font-sans rounded-none text-[#141414]"
+                        className="text-[10px] p-2 bg-white border border-[#141414] dark:border-neutral-700 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900 flex-1 font-sans rounded-none text-[#141414] dark:text-neutral-200"
                       />
                       <button
                         type="submit"
-                        className="bg-[#141414] text-white px-3 py-1 text-[10px] uppercase font-mono font-bold hover:bg-[#F27D26] hover:text-[#141414] border border-[#141414] transition-all cursor-pointer"
+                        className="bg-[#141414] dark:bg-[#1f1f1f] text-white px-3 py-1 text-[10px] uppercase font-mono font-bold hover:bg-[#F27D26] hover:text-[#141414] dark:text-neutral-200 border border-[#141414] dark:border-neutral-700 transition-all cursor-pointer"
                       >
                         Save
                       </button>
@@ -1304,35 +1435,35 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
 
                   {/* Links registry directory */}
                   {savedLinks.length === 0 ? (
-                    <p className="text-center py-4 text-[10px] text-[#141414]/50 font-mono">No custom partner URLs saved yet.</p>
+                    <p className="text-center py-4 text-[10px] text-[#141414] dark:text-neutral-200/50 font-mono">No custom partner URLs saved yet.</p>
                   ) : (
                     <div className="mt-3 flex flex-col gap-2 max-h-48 overflow-y-auto pr-1">
                       {savedLinks.map(link => (
-                        <div key={link.id} className="bg-white border border-[#141414] p-2.5 flex flex-col justify-between gap-1">
+                        <div key={link.id} className="bg-white border border-[#141414] dark:border-neutral-700 p-2.5 flex flex-col justify-between gap-1">
                           <div className="flex justify-between items-start gap-1">
                             <div>
-                              <span className="text-[11px] font-extrabold text-[#141414]">{link.label}</span>
-                              <span className="ml-2 inline-block px-1 py-0.2 text-[8px] font-mono uppercase bg-[#D6D5D1] text-[#141414] font-bold border border-[#141414]/30">{link.category}</span>
+                              <span className="text-[11px] font-extrabold text-[#141414] dark:text-neutral-200">{link.label}</span>
+                              <span className="ml-2 inline-block px-1 py-0.2 text-[8px] font-mono uppercase bg-[#D6D5D1] dark:bg-neutral-700 text-[#141414] dark:text-neutral-200 font-bold border border-[#141414] dark:border-neutral-700/30">{link.category}</span>
                             </div>
                             <button
                               type="button"
                               onClick={() => handleDeleteSavedLink(link.id)}
-                              className="text-[#141414]/40 hover:text-red-700 p-0.5 cursor-pointer"
+                              className="text-[#141414] dark:text-neutral-200/40 hover:text-red-700 p-0.5 cursor-pointer"
                               title="Delete link"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>
-                          {link.description && <p className="text-[9px] text-[#141414]/70 font-sans italic">{link.description}</p>}
-                          <div className="text-[9px] font-mono text-[#141414]/60 truncate select-all">{link.url}</div>
-                          <div className="flex gap-2.5 mt-1 border-t border-[#141414]/10 pt-1.5 justify-end">
+                          {link.description && <p className="text-[9px] text-[#141414] dark:text-neutral-200/70 font-sans italic">{link.description}</p>}
+                          <div className="text-[9px] font-mono text-[#141414] dark:text-neutral-200/60 truncate select-all">{link.url}</div>
+                          <div className="flex gap-2.5 mt-1 border-t border-[#141414] dark:border-neutral-700/10 pt-1.5 justify-end">
                             <button
                               type="button"
                               onClick={() => {
                                 navigator.clipboard.writeText(link.url);
                                 alert("Copied partner link: " + link.url);
                               }}
-                              className="text-[9px] font-mono text-[#141414] underline font-bold hover:text-[#F27D26] flex items-center gap-0.5 cursor-pointer"
+                              className="text-[9px] font-mono text-[#141414] dark:text-neutral-200 underline font-bold hover:text-[#F27D26] flex items-center gap-0.5 cursor-pointer"
                             >
                               <Copy className="w-2.5 h-2.5" /> Copy
                             </button>
@@ -1354,37 +1485,37 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                 </div>
 
                 {/* Interactive Dynamic Campaign Link UTM Builder */}
-                <div className="bg-[#E4E3E0] border-2 border-[#141414] p-4 rounded-none brutalist-shadow-sm select-none">
-                  <div className="flex items-center justify-between pb-2 border-b border-[#141414]/15">
-                    <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold flex items-center gap-1.5">
+                <div className="bg-[#E4E3E0] dark:bg-neutral-900 border-2 border-[#141414] dark:border-neutral-700 p-4 rounded-none brutalist-shadow-sm select-none">
+                  <div className="flex items-center justify-between pb-2 border-b border-[#141414] dark:border-neutral-700/15">
+                    <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold flex items-center gap-1.5">
                       <Zap className="w-3.5 h-3.5 text-[#F27D26]" /> Campaign UTM Parameter Link Builder
                     </span>
-                    <span className="bg-[#141414] text-[#E4E3E0] px-1.5 py-0.5 text-[8.5px] font-mono font-bold uppercase">Dynamic Tracker</span>
+                    <span className="bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] px-1.5 py-0.5 text-[8.5px] font-mono font-bold uppercase">Dynamic Tracker</span>
                   </div>
 
-                  <p className="text-[9.5px] text-[#141414]/70 mt-2 font-sans leading-relaxed">
+                  <p className="text-[9.5px] text-[#141414] dark:text-neutral-200/70 mt-2 font-sans leading-relaxed">
                     Convert any standard partner URL into a hyper-targeted UTM campaign link. Easily identify which platform, post, or banner produces your affiliate sales in Google Analytics.
                   </p>
 
-                  <div className="mt-3 flex flex-col gap-2.5 bg-[#F5F4F0] p-3 border border-[#141414]/20">
+                  <div className="mt-3 flex flex-col gap-2.5 bg-[#F5F4F0] dark:bg-neutral-800 p-3 border border-[#141414] dark:border-neutral-700/20">
                     <div>
-                      <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414]/80 mb-1">Base Affiliate URL</label>
+                      <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414] dark:text-neutral-200/80 mb-1">Base Affiliate URL</label>
                       <input
                         type="text"
                         placeholder="https://shop.auraring.com/partner-deal?ref=gemmaAI"
                         value={linkBuilder.baseUrl}
                         onChange={e => setLinkBuilder({ ...linkBuilder, baseUrl: e.target.value })}
-                        className="w-full text-[10px] p-2 bg-white border border-[#141414] focus:outline-none focus:bg-[#E4E3E0] font-mono rounded-none text-[#141414]"
+                        className="w-full text-[10px] p-2 bg-white border border-[#141414] dark:border-neutral-700 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900 font-mono rounded-none text-[#141414] dark:text-neutral-200"
                       />
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414]/80 mb-1">Campaign Source (utm_source)</label>
+                        <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414] dark:text-neutral-200/80 mb-1">Campaign Source (utm_source)</label>
                         <select
                           value={linkBuilder.source}
                           onChange={e => setLinkBuilder({ ...linkBuilder, source: e.target.value })}
-                          className="w-full text-[10px] p-2 bg-white border border-[#141414] focus:outline-none focus:bg-[#E4E3E0] font-mono rounded-none font-bold text-[#141414]"
+                          className="w-full text-[10px] p-2 bg-white border border-[#141414] dark:border-neutral-700 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900 font-mono rounded-none font-bold text-[#141414] dark:text-neutral-200"
                         >
                           <option value="twitter">X / Twitter</option>
                           <option value="linkedin">LinkedIn</option>
@@ -1396,55 +1527,55 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                       </div>
 
                       <div>
-                        <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414]/80 mb-1">Campaign Medium (utm_medium)</label>
+                        <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414] dark:text-neutral-200/80 mb-1">Campaign Medium (utm_medium)</label>
                         <input
                           type="text"
                           placeholder="social"
                           value={linkBuilder.medium}
                           onChange={e => setLinkBuilder({ ...linkBuilder, medium: e.target.value })}
-                          className="w-full text-[10px] p-2 bg-white border border-[#141414] focus:outline-none focus:bg-[#E4E3E0] font-mono rounded-none text-[#141414]"
+                          className="w-full text-[10px] p-2 bg-white border border-[#141414] dark:border-neutral-700 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900 font-mono rounded-none text-[#141414] dark:text-neutral-200"
                         />
                       </div>
                     </div>
 
                     <div className="grid grid-cols-3 gap-1.5">
                       <div className="col-span-1">
-                        <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414]/80 mb-1">Campaign Name (utm_campaign)</label>
+                        <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414] dark:text-neutral-200/80 mb-1">Campaign Name (utm_campaign)</label>
                         <input
                           type="text"
                           placeholder="gemma_promotions"
                           value={linkBuilder.campaign}
                           onChange={e => setLinkBuilder({ ...linkBuilder, campaign: e.target.value })}
-                          className="w-full text-[9.5px] p-1.5 bg-white border border-[#141414] focus:outline-none focus:bg-[#E4E3E0] font-mono rounded-none text-[#141414]"
+                          className="w-full text-[9.5px] p-1.5 bg-white border border-[#141414] dark:border-neutral-700 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900 font-mono rounded-none text-[#141414] dark:text-neutral-200"
                         />
                       </div>
 
                       <div className="col-span-1">
-                        <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414]/80 mb-1">Ad Content (utm_content)</label>
+                        <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414] dark:text-neutral-200/80 mb-1">Ad Content (utm_content)</label>
                         <input
                           type="text"
                           placeholder="thread_post_1"
                           value={linkBuilder.content}
                           onChange={e => setLinkBuilder({ ...linkBuilder, content: e.target.value })}
-                          className="w-full text-[9.5px] p-1.5 bg-white border border-[#141414] focus:outline-none focus:bg-[#E4E3E0] font-mono rounded-none text-[#141414]"
+                          className="w-full text-[9.5px] p-1.5 bg-white border border-[#141414] dark:border-neutral-700 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900 font-mono rounded-none text-[#141414] dark:text-neutral-200"
                         />
                       </div>
 
                       <div className="col-span-1">
-                        <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414]/80 mb-1">Affiliate SubID (aff_sub)</label>
+                        <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414] dark:text-neutral-200/80 mb-1">Affiliate SubID (aff_sub)</label>
                         <input
                           type="text"
                           placeholder="gemma_ref"
                           value={linkBuilder.subId}
                           onChange={e => setLinkBuilder({ ...linkBuilder, subId: e.target.value })}
-                          className="w-full text-[9.5px] p-1.5 bg-white border border-[#141414] focus:outline-none focus:bg-[#E4E3E0] font-mono rounded-none text-[#141414]"
+                          className="w-full text-[9.5px] p-1.5 bg-white border border-[#141414] dark:border-neutral-700 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900 font-mono rounded-none text-[#141414] dark:text-neutral-200"
                         />
                       </div>
                     </div>
 
-                    <div className="mt-2 border-t border-[#141414]/15 pt-2">
-                      <label className="block text-[8.5px] font-mono uppercase font-extrabold text-[#141414]/90 mb-1">Live Formulated Tracking Link Preview</label>
-                      <div className="bg-white p-2 border border-[#141414] font-mono text-[9.5px] text-emerald-800 break-all select-all font-bold min-h-[36px]">
+                    <div className="mt-2 border-t border-[#141414] dark:border-neutral-700/15 pt-2">
+                      <label className="block text-[8.5px] font-mono uppercase font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1">Live Formulated Tracking Link Preview</label>
+                      <div className="bg-white p-2 border border-[#141414] dark:border-neutral-700 font-mono text-[9.5px] text-emerald-800 break-all select-all font-bold min-h-[36px]">
                         {(() => {
                           if (!linkBuilder.baseUrl) return "Please enter a base URL above...";
                           try {
@@ -1505,7 +1636,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                           navigator.clipboard.writeText(url);
                           alert("📋 Copied custom UTM tracking URL successfully!");
                         }}
-                        className="bg-white text-[#141414] hover:bg-[#141414] hover:text-white px-3 py-1.5 text-[9.5px] uppercase font-mono font-bold border border-[#141414] transition-all cursor-pointer flex items-center gap-1"
+                        className="bg-white text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f] hover:text-white px-3 py-1.5 text-[9.5px] uppercase font-mono font-bold border border-[#141414] dark:border-neutral-700 transition-all cursor-pointer flex items-center gap-1"
                       >
                         <Copy className="w-2.5 h-2.5" /> Copy Campaign Link
                       </button>
@@ -1543,7 +1674,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                           setAffiliateForm(prev => ({ ...prev, affiliateLink: url }));
                           alert("🎯 Applied tracking link to Affiliate Post generation form field successfully!");
                         }}
-                        className="bg-[#F27D26] text-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] px-3 py-1.5 text-[9.5px] uppercase font-mono font-bold border border-[#141414] transition-all cursor-pointer flex items-center gap-1"
+                        className="bg-[#F27D26] text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f] hover:text-[#E4E3E0] dark:text-[#a0a0a0] px-3 py-1.5 text-[9.5px] uppercase font-mono font-bold border border-[#141414] dark:border-neutral-700 transition-all cursor-pointer flex items-center gap-1"
                       >
                         <Plus className="w-3 h-3" /> Select for Copy
                       </button>
@@ -1551,76 +1682,76 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                   </div>
                 </div>
 
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-5 rounded-none brutalist-shadow block">
-                  <h3 className="font-serif italic font-extrabold text-[#141414] text-base tracking-tight mb-4 flex items-center justify-between">
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-5 rounded-none brutalist-shadow block">
+                  <h3 className="font-serif italic font-extrabold text-[#141414] dark:text-neutral-200 text-base tracking-tight mb-4 flex items-center justify-between">
                     <span>Affiliate Campaign Generator</span>
-                    <span className="text-[9px] bg-[#141414] text-[#E4E3E0] px-1.5 font-mono font-bold uppercase">PROD-OS</span>
+                    <span className="text-[9px] bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] px-1.5 font-mono font-bold uppercase">PROD-OS</span>
                   </h3>
 
                   <div className="flex flex-col gap-4">
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase">Product / Service Name</label>
+                      <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase">Product / Service Name</label>
                       <input
                         type="text"
                         placeholder="e.g. Fitbit Tracker or Apex Cloud Services"
                         value={affiliateForm.productName}
                         onChange={e => setAffiliateForm({ ...affiliateForm, productName: e.target.value })}
-                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0]/20 font-sans font-bold"
+                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/20 font-sans font-bold"
                       />
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase">Description & Key Selling Points</label>
+                      <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase">Description & Key Selling Points</label>
                       <textarea
                         rows={4}
                         placeholder="Write down core features, user benefits, specs, or promo details..."
                         value={affiliateForm.productDescription}
                         onChange={e => setAffiliateForm({ ...affiliateForm, productDescription: e.target.value })}
-                        className="w-full text-xs py-2 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0]/20 font-sans"
+                        className="w-full text-xs py-2 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/20 font-sans"
                       />
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase">Affiliate Link</label>
+                        <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase">Affiliate Link</label>
                         <input
                           type="text"
                           placeholder="e.g. https://brand.pxf.io/..."
                           value={affiliateForm.affiliateLink}
                           onChange={e => setAffiliateForm({ ...affiliateForm, affiliateLink: e.target.value })}
-                          className="w-full text-[11px] py-2 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0]/20 font-mono"
+                          className="w-full text-[11px] py-2 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/20 font-mono"
                         />
                       </div>
                       <div>
-                        <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase">Price/Deals</label>
+                        <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase">Price/Deals</label>
                         <input
                           type="text"
                           placeholder="e.g. $49 (20% off)"
                           value={affiliateForm.price}
                           onChange={e => setAffiliateForm({ ...affiliateForm, price: e.target.value })}
-                          className="w-full text-xs py-2 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0]/20 font-sans"
+                          className="w-full text-xs py-2 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/20 font-sans"
                         />
                       </div>
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase">Target Keywords (Comma Separated)</label>
+                      <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase">Target Keywords (Comma Separated)</label>
                       <input
                         type="text"
                         placeholder="Fitbit, smart ring, health track, fitness discount"
                         value={affiliateForm.keywords}
                         onChange={e => setAffiliateForm({ ...affiliateForm, keywords: e.target.value })}
-                        className="w-full text-[11px] py-2 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0]/20 font-sans"
+                        className="w-full text-[11px] py-2 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/20 font-sans"
                       />
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase">Platform Layout</label>
+                        <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase">Platform Layout</label>
                         <select
                           value={affiliateForm.platform}
                           onChange={e => setAffiliateForm({ ...affiliateForm, platform: e.target.value as any })}
-                          className="w-full text-[11px] py-2 px-2.5 bg-white border-2 border-[#141414] rounded-none text-[#141414] font-bold focus:outline-none"
+                          className="w-full text-[11px] py-2 px-2.5 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-bold focus:outline-none"
                         >
                           <option value="X / Twitter">X / Twitter</option>
                           <option value="LinkedIn">LinkedIn</option>
@@ -1628,11 +1759,11 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                         </select>
                       </div>
                       <div>
-                        <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase">Conversion Tone</label>
+                        <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase">Conversion Tone</label>
                         <select
                           value={affiliateForm.tone}
                           onChange={e => setAffiliateForm({ ...affiliateForm, tone: e.target.value as any })}
-                          className="w-full text-[11px] py-2 px-2.5 bg-white border-2 border-[#141414] rounded-none text-[#141414] font-bold focus:outline-none"
+                          className="w-full text-[11px] py-2 px-2.5 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-bold focus:outline-none"
                         >
                           <option value="Engaging">Engaging Hooks</option>
                           <option value="Professional">Professional Review</option>
@@ -1644,11 +1775,11 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase">Structure Style</label>
+                      <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase">Structure Style</label>
                       <select
                         value={affiliateForm.style}
                         onChange={e => setAffiliateForm({ ...affiliateForm, style: e.target.value as any })}
-                        className="w-full text-[11px] py-2 px-2.5 bg-white border-2 border-[#141414] rounded-none text-[#141414] font-bold focus:outline-none"
+                        className="w-full text-[11px] py-2 px-2.5 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-bold focus:outline-none"
                       >
                         <option value="Standard Post">Standard Post (with high CTR hook)</option>
                         <option value="Thread Format">Indie Hacker Thread Structure</option>
@@ -1660,7 +1791,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                     <button
                       onClick={generateAffiliatePost}
                       disabled={isGeneratingPost}
-                      className="w-full py-3 px-4 bg-[#141414] text-[#E4E3E0] hover:bg-[#F27D26] hover:text-[#141414] disabled:opacity-50 rounded-none font-mono font-bold text-xs uppercase shadow-none tracking-wider border-2 border-[#141414] transition-all cursor-pointer select-none flex items-center justify-center gap-2 brutalist-shadow-sm"
+                      className="w-full py-3 px-4 bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] hover:bg-[#F27D26] hover:text-[#141414] dark:text-neutral-200 disabled:opacity-50 rounded-none font-mono font-bold text-xs uppercase shadow-none tracking-wider border-2 border-[#141414] dark:border-neutral-700 transition-all cursor-pointer select-none flex items-center justify-center gap-2 brutalist-shadow-sm"
                     >
                       {isGeneratingPost ? (
                         <>
@@ -1682,9 +1813,9 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
               <div className="xl:col-span-7 flex flex-col gap-6">
                 
                 {/* Visual Social Frame Mockups */}
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-5 rounded-none brutalist-shadow flex-1 flex flex-col min-h-[460px]">
-                  <div className="flex items-center justify-between border-b-2 border-[#141414] pb-3 mb-4 select-none">
-                    <span className="text-xs font-mono text-[#141414] uppercase tracking-wider font-extrabold flex items-center gap-2">
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-5 rounded-none brutalist-shadow flex-1 flex flex-col min-h-[460px]">
+                  <div className="flex items-center justify-between border-b-2 border-[#141414] dark:border-neutral-700 pb-3 mb-4 select-none">
+                    <span className="text-xs font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold flex items-center gap-2">
                       <span className="w-2.5 h-2.5 bg-[#F27D26] rounded-full animate-ping"></span> Live Social Rendering Engine
                     </span>
 
@@ -1692,7 +1823,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                       {generatedPost && (
                         <button
                           onClick={copyPostText}
-                          className="bg-[#141414] border-2 border-[#141414] hover:bg-[#F5F4F0] hover:text-[#141414] p-2 text-[#E4E3E0] transition-all flex items-center gap-1.5 text-xs font-mono font-bold uppercase rounded-none"
+                          className="bg-[#141414] dark:bg-[#1f1f1f] border-2 border-[#141414] dark:border-neutral-700 hover:bg-[#F5F4F0] dark:bg-neutral-800 hover:text-[#141414] dark:text-neutral-200 p-2 text-[#E4E3E0] dark:text-[#a0a0a0] transition-all flex items-center gap-1.5 text-xs font-mono font-bold uppercase rounded-none"
                         >
                           {copiedPost ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
                           <span>{copiedPost ? "Copied" : "Copy Post"}</span>
@@ -1703,9 +1834,9 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
 
                   {isGeneratingPost ? (
                     <div className="flex-1 flex flex-col items-center justify-center py-20 text-center">
-                      <Cpu className="w-12 h-12 text-[#141414] animate-spin mb-4" />
-                      <p className="font-serif italic font-extrabold text-[#141414] text-base">Synthesizing Copywriting Weights</p>
-                      <p className="text-xs text-[#141414]/70 mt-1.5 font-mono max-w-sm">
+                      <Cpu className="w-12 h-12 text-[#141414] dark:text-neutral-200 animate-spin mb-4" />
+                      <p className="font-serif italic font-extrabold text-[#141414] dark:text-neutral-200 text-base">Synthesizing Copywriting Weights</p>
+                      <p className="text-xs text-[#141414] dark:text-neutral-200/70 mt-1.5 font-mono max-w-sm">
                         Request has been dispatched to {connection.provider === "local" ? `local model '${connection.localModelName}'` : "server Gemini cloud engine."}
                       </p>
                     </div>
@@ -1713,31 +1844,31 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                     <div className="flex-1 flex flex-col gap-4">
                       
                       {/* Social Frame Layout Selection */}
-                      <div className="p-2 border border-[#141414] bg-[#D6D5D1] text-[11px] font-mono text-[#141414] font-bold flex items-center justify-between rounded-none">
+                      <div className="p-2 border border-[#141414] dark:border-neutral-700 bg-[#D6D5D1] dark:bg-neutral-700 text-[11px] font-mono text-[#141414] dark:text-neutral-200 font-bold flex items-center justify-between rounded-none">
                         <span>FORMAT: CHARACTER-RICH MARKDOWN / COPY</span>
-                        <span className="bg-[#141414] text-[#E4E3E0] px-1.5 py-0.5 rounded-none text-[9px] uppercase font-bold">
+                        <span className="bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] px-1.5 py-0.5 rounded-none text-[9px] uppercase font-bold">
                           {affiliateForm.platform}
                         </span>
                       </div>
 
                       {/* Mockup Renderer based on platform */}
-                      <div className="flex-1 overflow-y-auto max-h-[400px] border-2 border-[#141414] bg-[#E4E3E0] p-5 rounded-none relative">
+                      <div className="flex-1 overflow-y-auto max-h-[400px] border-2 border-[#141414] dark:border-neutral-700 bg-[#E4E3E0] dark:bg-neutral-900 p-5 rounded-none relative">
                         {affiliateForm.platform === "X / Twitter" && (
-                          <div className="flex gap-3 bg-white border-2 border-[#141414] p-4 rounded-none">
-                            <div className="w-10 h-10 rounded-none bg-[#141414] text-[#E4E3E0] flex items-center justify-center font-bold shrink-0 text-sm border-2 border-[#141414] uppercase">
+                          <div className="flex gap-3 bg-white border-2 border-[#141414] dark:border-neutral-700 p-4 rounded-none">
+                            <div className="w-10 h-10 rounded-none bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] flex items-center justify-center font-bold shrink-0 text-sm border-2 border-[#141414] dark:border-neutral-700 uppercase">
                               G
                             </div>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="font-bold text-[#141414] text-xs">Gemma Affiliate Assistant</span>
+                                <span className="font-bold text-[#141414] dark:text-neutral-200 text-xs">Gemma Affiliate Assistant</span>
                                 <span className="text-[#F27D26] text-xs font-mono">✔️</span>
-                                <span className="text-[#141414]/60 text-xs font-mono">@gemma_post</span>
-                                <span className="text-[#141414]/40 text-xs font-mono">• Just now</span>
+                                <span className="text-[#141414] dark:text-neutral-200/60 text-xs font-mono">@gemma_post</span>
+                                <span className="text-[#141414] dark:text-neutral-200/40 text-xs font-mono">• Just now</span>
                               </div>
-                              <div className="text-[#141414] text-xs mt-2 leading-relaxed whitespace-pre-wrap select-text font-sans font-medium">
+                              <div className="text-[#141414] dark:text-neutral-200 text-xs mt-2 leading-relaxed whitespace-pre-wrap select-text font-sans font-medium">
                                 {generatedPost}
                               </div>
-                              <div className="flex items-center justify-between text-[#141414]/60 text-xs mt-4 pt-3 border-t border-[#141414]/15 max-w-md font-mono font-bold">
+                              <div className="flex items-center justify-between text-[#141414] dark:text-neutral-200/60 text-xs mt-4 pt-3 border-t border-[#141414] dark:border-neutral-700/15 max-w-md font-mono font-bold">
                                 <span className="hover:text-[#F27D26] transition-all cursor-pointer">💬 24</span>
                                 <span className="hover:text-[#F27D26] transition-all cursor-pointer">🔁 68</span>
                                 <span className="hover:text-[#F27D26] transition-all cursor-pointer">❤️ 1.2K</span>
@@ -1748,24 +1879,24 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                         )}
 
                         {affiliateForm.platform === "LinkedIn" && (
-                          <div className="bg-white border-2 border-[#141414] p-4 rounded-none">
+                          <div className="bg-white border-2 border-[#141414] dark:border-neutral-700 p-4 rounded-none">
                             <div className="flex gap-3 items-center">
-                              <div className="w-10 h-10 rounded-none bg-[#141414] text-[#E4E3E0] flex items-center justify-center font-bold shrink-0 text-xs border-2 border-[#141414] uppercase">
+                              <div className="w-10 h-10 rounded-none bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] flex items-center justify-center font-bold shrink-0 text-xs border-2 border-[#141414] dark:border-neutral-700 uppercase">
                                 LM
                               </div>
                               <div>
                                 <div className="flex items-center gap-1.5">
-                                  <span className="font-bold text-[#141414] text-xs">Local Model Expert</span>
-                                  <span className="bg-[#D6D5D1] text-[9px] text-[#141414] px-1 font-mono font-bold rounded-none">2nd</span>
+                                  <span className="font-bold text-[#141414] dark:text-neutral-200 text-xs">Local Model Expert</span>
+                                  <span className="bg-[#D6D5D1] dark:bg-neutral-700 text-[9px] text-[#141414] dark:text-neutral-200 px-1 font-mono font-bold rounded-none">2nd</span>
                                 </div>
-                                <p className="text-[10px] text-[#141414]/70 font-mono">Marketing Automations and Affiliate Architect @ GemmaHQ</p>
-                                <p className="text-[9px] text-[#141414]/50 font-mono">2m • Edited • 🌐</p>
+                                <p className="text-[10px] text-[#141414] dark:text-neutral-200/70 font-mono">Marketing Automations and Affiliate Architect @ GemmaHQ</p>
+                                <p className="text-[9px] text-[#141414] dark:text-neutral-200/50 font-mono">2m • Edited • 🌐</p>
                               </div>
                             </div>
-                            <div className="text-[#141414] text-xs mt-4 leading-relaxed whitespace-pre-wrap select-text font-sans p-1">
+                            <div className="text-[#141414] dark:text-neutral-200 text-xs mt-4 leading-relaxed whitespace-pre-wrap select-text font-sans p-1">
                               {generatedPost}
                             </div>
-                            <div className="flex items-center justify-between text-[#141414]/60 text-[10px] mt-6 pt-3 border-t border-[#141414]/10 font-mono font-bold">
+                            <div className="flex items-center justify-between text-[#141414] dark:text-neutral-200/60 text-[10px] mt-6 pt-3 border-t border-[#141414] dark:border-neutral-700/10 font-mono font-bold">
                               <div className="flex gap-2">
                                 <span>👍 150 Likes</span>
                                 <span>•</span>
@@ -1777,20 +1908,20 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                         )}
 
                         {affiliateForm.platform === "Facebook" && (
-                          <div className="bg-white border-2 border-[#141414] p-4 rounded-none">
+                          <div className="bg-white border-2 border-[#141414] dark:border-neutral-700 p-4 rounded-none">
                             <div className="flex gap-3 items-center">
-                              <div className="w-10 h-10 rounded-none bg-[#141414] text-[#E4E3E0] flex items-center justify-center font-bold shrink-0 text-xs border-2 border-[#141414] uppercase">
+                              <div className="w-10 h-10 rounded-none bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] flex items-center justify-center font-bold shrink-0 text-xs border-2 border-[#141414] dark:border-neutral-700 uppercase">
                                 FB
                               </div>
                               <div>
-                                <span className="font-bold text-[#141414] text-xs block">Premium Affiliate Automation</span>
-                                <span className="text-[9px] text-[#141414]/60 font-mono font-bold">Sponsored • Paid Commissions • 👥</span>
+                                <span className="font-bold text-[#141414] dark:text-neutral-200 text-xs block">Premium Affiliate Automation</span>
+                                <span className="text-[9px] text-[#141414] dark:text-neutral-200/60 font-mono font-bold">Sponsored • Paid Commissions • 👥</span>
                               </div>
                             </div>
-                            <div className="text-[#141414] text-xs mt-4 leading-relaxed whitespace-pre-wrap select-text font-sans p-1">
+                            <div className="text-[#141414] dark:text-neutral-200 text-xs mt-4 leading-relaxed whitespace-pre-wrap select-text font-sans p-1">
                               {generatedPost}
                             </div>
-                            <div className="flex items-center justify-between text-[#141414]/50 text-xs mt-6 pt-3 border-t border-[#141414]/10 font-mono font-bold">
+                            <div className="flex items-center justify-between text-[#141414] dark:text-neutral-200/50 text-xs mt-6 pt-3 border-t border-[#141414] dark:border-neutral-700/10 font-mono font-bold">
                               <div className="flex gap-4">
                                 <span className="hover:text-[#F27D26] cursor-pointer">👍 Like</span>
                                 <span className="hover:text-[#F27D26] cursor-pointer">💬 Comment</span>
@@ -1802,10 +1933,10 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                       </div>
                     </div>
                   ) : (
-                    <div className="flex-1 flex flex-col items-center justify-center py-24 text-center border-2 border-dashed border-[#141414]/30 rounded-none bg-[#D6D5D1]/10">
-                      <FileText className="w-12 h-12 text-[#141414]/40 mb-3" />
-                      <p className="font-serif italic font-extrabold text-[#141414] text-sm">No Post Formulated Yet</p>
-                      <p className="text-xs text-[#141414]/70 max-w-sm mt-1 font-mono">
+                    <div className="flex-1 flex flex-col items-center justify-center py-24 text-center border-2 border-dashed border-[#141414] dark:border-neutral-700/30 rounded-none bg-[#D6D5D1] dark:bg-neutral-700/10">
+                      <FileText className="w-12 h-12 text-[#141414] dark:text-neutral-200/40 mb-3" />
+                      <p className="font-serif italic font-extrabold text-[#141414] dark:text-neutral-200 text-sm">No Post Formulated Yet</p>
+                      <p className="text-xs text-[#141414] dark:text-neutral-200/70 max-w-sm mt-1 font-mono">
                         Select a fast template catalog or fill out the product inputs and hit the generation dispatch button above!
                       </p>
                     </div>
@@ -1814,32 +1945,32 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
 
                 {/* Affiliate Publication Scheduler widget */}
                 {generatedPost && (
-                  <div className="bg-[#D6D5D1] border-2 border-[#141414] p-4 rounded-none brutalist-shadow-sm select-none flex flex-col gap-2">
-                    <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold flex items-center gap-1.5 pb-2 border-b border-[#141414]/15">
+                  <div className="bg-[#D6D5D1] dark:bg-neutral-700 border-2 border-[#141414] dark:border-neutral-700 p-4 rounded-none brutalist-shadow-sm select-none flex flex-col gap-2">
+                    <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold flex items-center gap-1.5 pb-2 border-b border-[#141414] dark:border-neutral-700/15">
                       <Calendar className="w-4 h-4 text-[#F27D26]" /> Scheduler Release Dispatcher
                     </span>
                     <div className="flex flex-col sm:flex-row items-end gap-3 mt-1">
                       <div className="flex-1 w-full">
-                        <label className="block text-[9px] font-mono font-bold text-[#141414] mb-1 uppercase">Date Release</label>
+                        <label className="block text-[9px] font-mono font-bold text-[#141414] dark:text-neutral-200 mb-1 uppercase">Date Release</label>
                         <input
                           type="date"
                           value={selectedScheduleDateTime.date}
                           onChange={e => setSelectedScheduleDateTime({ ...selectedScheduleDateTime, date: e.target.value })}
-                          className="w-full text-xs p-2.5 bg-white border border-[#141414] font-mono rounded-none"
+                          className="w-full text-xs p-2.5 bg-white border border-[#141414] dark:border-neutral-700 font-mono rounded-none"
                         />
                       </div>
                       <div className="flex-1 w-full">
-                        <label className="block text-[9px] font-mono font-bold text-[#141414] mb-1 uppercase">Time Release</label>
+                        <label className="block text-[9px] font-mono font-bold text-[#141414] dark:text-neutral-200 mb-1 uppercase">Time Release</label>
                         <input
                           type="time"
                           value={selectedScheduleDateTime.time}
                           onChange={e => setSelectedScheduleDateTime({ ...selectedScheduleDateTime, time: e.target.value })}
-                          className="w-full text-xs p-2.5 bg-white border border-[#141414] font-mono rounded-none"
+                          className="w-full text-xs p-2.5 bg-white border border-[#141414] dark:border-neutral-700 font-mono rounded-none"
                         />
                       </div>
                       <button
                         onClick={() => handleSchedulePost(generatedPost, affiliateForm.productName, affiliateForm.platform)}
-                        className="w-full sm:w-auto bg-[#141414] text-[#E4E3E0] hover:bg-[#F27D26] hover:text-[#141414] py-2.5 px-4 text-[10px] uppercase font-mono font-extrabold border-2 border-[#141414] transition-all cursor-pointer rounded-none select-none"
+                        className="w-full sm:w-auto bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] hover:bg-[#F27D26] hover:text-[#141414] dark:text-neutral-200 py-2.5 px-4 text-[10px] uppercase font-mono font-extrabold border-2 border-[#141414] dark:border-neutral-700 transition-all cursor-pointer rounded-none select-none"
                       >
                         Queue Post
                       </button>
@@ -1848,20 +1979,20 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                 )}
 
                 {/* Scheduled Publications Registry Queue Status */}
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-4 rounded-none brutalist-shadow select-none">
-                  <div className="flex items-center justify-between mb-3 border-b border-[#141414]/15 pb-2">
-                    <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold flex items-center gap-1.5">
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-4 rounded-none brutalist-shadow select-none">
+                  <div className="flex items-center justify-between mb-3 border-b border-[#141414] dark:border-neutral-700/15 pb-2">
+                    <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold flex items-center gap-1.5">
                       <Clock className="w-4 h-4 text-[#F27D26]" /> Publications Queue Block ({scheduledPosts.length})
                     </span>
                   </div>
 
                   {scheduledPosts.length === 0 ? (
-                    <div className="text-center py-6 text-xs text-[#141414]/50 font-mono">
+                    <div className="text-center py-6 text-xs text-[#141414] dark:text-neutral-200/50 font-mono">
                       No pending publications in the dispatch queue. Queue a post above!
                     </div>
                   ) : (
-                    <div className="flex flex-col border border-[#141414] divide-y divide-[#141414]">
-                      <div className="grid grid-cols-12 text-[9px] bg-[#141414] text-[#E4E3E0] px-3 py-2 font-mono uppercase font-bold">
+                    <div className="flex flex-col border border-[#141414] dark:border-neutral-700 divide-y divide-[#141414]">
+                      <div className="grid grid-cols-12 text-[9px] bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] px-3 py-2 font-mono uppercase font-bold">
                         <span className="col-span-3">Product Name</span>
                         <span className="col-span-2">Platform</span>
                         <span className="col-span-3">Release Time</span>
@@ -1870,12 +2001,12 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                       </div>
                       <div className="flex flex-col bg-white divide-y divide-[#141414]/10 max-h-56 overflow-y-auto">
                         {scheduledPosts.map(post => (
-                          <div key={post.id} className="grid grid-cols-12 text-[10px] px-3 py-2.5 items-center font-mono hover:bg-[#D6D5D1]/30">
-                            <span className="col-span-3 font-bold uppercase truncate pr-2 text-[#141414]">{post.productName}</span>
+                          <div key={post.id} className="grid grid-cols-12 text-[10px] px-3 py-2.5 items-center font-mono hover:bg-[#D6D5D1] dark:bg-neutral-700/30">
+                            <span className="col-span-3 font-bold uppercase truncate pr-2 text-[#141414] dark:text-neutral-200">{post.productName}</span>
                             <span className="col-span-2">
-                              <span className="inline-block px-1 bg-[#D6D5D1] text-[#141414] border border-[#141414]/30 text-[8px] uppercase font-extrabold">{post.platform}</span>
+                              <span className="inline-block px-1 bg-[#D6D5D1] dark:bg-neutral-700 text-[#141414] dark:text-neutral-200 border border-[#141414] dark:border-neutral-700/30 text-[8px] uppercase font-extrabold">{post.platform}</span>
                             </span>
-                            <span className="col-span-3 text-[#141414]/70">{post.scheduledTime}</span>
+                            <span className="col-span-3 text-[#141414] dark:text-neutral-200/70">{post.scheduledTime}</span>
                             <span className="col-span-2">
                               {post.status === "Pending" ? (
                                 <span className="inline-flex items-center gap-1 px-1.5 py-0.2 bg-amber-100 text-amber-800 border border-amber-500/40 text-[9px] font-extrabold animate-pulse rounded-none">
@@ -1891,7 +2022,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                               {post.status === "Pending" && (
                                 <button
                                   onClick={() => triggerPostPublicationNow(post.id)}
-                                  className="text-[9px] font-bold uppercase bg-[#F27D26] text-[#141414] hover:bg-[#141414] hover:text-white px-1.5 py-0.5 border border-[#141414]/40 cursor-pointer"
+                                  className="text-[9px] font-bold uppercase bg-[#F27D26] text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f] hover:text-white px-1.5 py-0.5 border border-[#141414] dark:border-neutral-700/40 cursor-pointer"
                                   title="Force publish to social feed"
                                 >
                                   Publish
@@ -1914,9 +2045,9 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
 
                 {/* Local History log - High Density Technical Ledger */}
                 {campaignHistory.length > 0 && (
-                  <div className="bg-[#D6D5D1] border-2 border-[#141414] p-4 rounded-none brutalist-shadow select-none">
-                    <div className="flex items-center justify-between mb-3 border-b border-[#141414]/15 pb-2">
-                      <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold flex items-center gap-1.5">
+                  <div className="bg-[#D6D5D1] dark:bg-neutral-700 border-2 border-[#141414] dark:border-neutral-700 p-4 rounded-none brutalist-shadow select-none">
+                    <div className="flex items-center justify-between mb-3 border-b border-[#141414] dark:border-neutral-700/15 pb-2">
+                      <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold flex items-center gap-1.5">
                         <Activity className="w-4 h-4 text-[#F27D26]" /> Local Ledger Pipeline ({campaignHistory.length})
                       </span>
                       <button
@@ -1924,15 +2055,15 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                           setCampaignHistory([]);
                           localStorage.removeItem("gemma_campaign_history");
                         }}
-                        className="text-[#141414]/60 hover:text-red-700 text-[10px] uppercase font-mono font-bold flex items-center gap-1 cursor-pointer"
+                        className="text-[#141414] dark:text-neutral-200/60 hover:text-red-700 text-[10px] uppercase font-mono font-bold flex items-center gap-1 cursor-pointer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                         Clear Ledger
                       </button>
                     </div>
 
-                    <div className="flex flex-col border border-[#141414]">
-                      <div className="grid grid-cols-12 text-[9px] uppercase font-mono font-extrabold tracking-tight bg-[#141414] text-[#E4E3E0] px-3 py-1.5">
+                    <div className="flex flex-col border border-[#141414] dark:border-neutral-700">
+                      <div className="grid grid-cols-12 text-[9px] uppercase font-mono font-extrabold tracking-tight bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] px-3 py-1.5">
                         <span className="col-span-4">PRODUCT / NICHE</span>
                         <span className="col-span-3">PLATFORM</span>
                         <span className="col-span-3 text-center">TONE</span>
@@ -1942,7 +2073,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                         {campaignHistory.map((camp) => (
                           <div
                             key={camp.id}
-                            className="grid grid-cols-12 px-3 py-2.5 items-center hover:bg-[#141414] hover:text-[#E4E3E0] transition-all cursor-pointer group"
+                            className="grid grid-cols-12 px-3 py-2.5 items-center hover:bg-[#141414] dark:bg-[#1f1f1f] hover:text-[#E4E3E0] dark:text-[#a0a0a0] transition-all cursor-pointer group"
                             onClick={() => {
                               setGeneratedPost(camp.generatedPost || "");
                               setAffiliateForm({
@@ -1957,11 +2088,11 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                               });
                             }}
                           >
-                            <span className="col-span-4 font-bold truncate pr-3 uppercase text-[#141414] group-hover:text-inherit">{camp.productName}</span>
-                            <span className="col-span-3 text-[10px] uppercase opacity-75 truncate text-[#141414] group-hover:text-inherit">{camp.platform}</span>
+                            <span className="col-span-4 font-bold truncate pr-3 uppercase text-[#141414] dark:text-neutral-200 group-hover:text-inherit">{camp.productName}</span>
+                            <span className="col-span-3 text-[10px] uppercase opacity-75 truncate text-[#141414] dark:text-neutral-200 group-hover:text-inherit">{camp.platform}</span>
                             <span className="col-span-3 text-center text-[10px] uppercase text-[#F27D26] group-hover:text-[#F27D26] font-bold truncate">{camp.tone}</span>
                             <span className="col-span-2 text-right">
-                              <span className="inline-block px-1.5 py-0.5 text-[9px] font-bold uppercase bg-[#141414] text-[#E4E3E0] border border-[#141414] group-hover:bg-[#E4E3E0] group-hover:text-[#141414]">
+                              <span className="inline-block px-1.5 py-0.5 text-[9px] font-bold uppercase bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] border border-[#141414] dark:border-neutral-700 group-hover:bg-[#E4E3E0] dark:bg-neutral-900 group-hover:text-[#141414] dark:text-neutral-200">
                                 LOAD
                               </span>
                             </span>
@@ -1984,8 +2115,8 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
               <div className="xl:col-span-4 flex flex-col gap-6">
                 
                 {/* Template picker */}
-                <div className="bg-[#D6D5D1] border-2 border-[#141414] p-4 rounded-none brutalist-shadow-sm select-none">
-                  <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold flex items-center gap-1.5 pb-2 border-b border-[#141414]/15">
+                <div className="bg-[#D6D5D1] dark:bg-neutral-700 border-2 border-[#141414] dark:border-neutral-700 p-4 rounded-none brutalist-shadow-sm select-none">
+                  <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold flex items-center gap-1.5 pb-2 border-b border-[#141414] dark:border-neutral-700/15">
                     <Globe className="w-3.5 h-3.5 text-[#F27D26]" /> Quick Page Templates
                   </span>
                   <div className="grid grid-cols-1 gap-1.5 mt-2">
@@ -1993,105 +2124,105 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                       <button
                         key={id}
                         onClick={() => applyLandingTemplate(id)}
-                        className="text-left p-2.5 rounded-none bg-[#F5F4F0] border-2 border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] transition-all flex items-center justify-between group cursor-pointer"
+                        className="text-left p-2.5 rounded-none bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 hover:bg-[#141414] dark:bg-[#1f1f1f] hover:text-[#E4E3E0] dark:text-[#a0a0a0] transition-all flex items-center justify-between group cursor-pointer"
                       >
                         <div>
-                          <p className="text-[10px] font-bold uppercase text-[#141414] group-hover:text-inherit truncate">{item.offerName}</p>
+                          <p className="text-[10px] font-bold uppercase text-[#141414] dark:text-neutral-200 group-hover:text-inherit truncate">{item.offerName}</p>
                           <p className="text-[9px] font-mono uppercase opacity-65 group-hover:text-inherit mt-0.5">{item.styleTheme}</p>
                         </div>
-                        <ArrowRight className="w-3.5 h-3.5 text-[#141414] shrink-0 group-hover:text-inherit" />
+                        <ArrowRight className="w-3.5 h-3.5 text-[#141414] dark:text-neutral-200 shrink-0 group-hover:text-inherit" />
                       </button>
                     ))}
                   </div>
                 </div>
 
                 {/* Google Analytics & Campaign Tracking Integrator Panel */}
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-4 rounded-none brutalist-shadow-sm select-none">
-                  <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold flex items-center gap-1.5 pb-2 border-b border-[#141414]/15">
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-4 rounded-none brutalist-shadow-sm select-none">
+                  <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold flex items-center gap-1.5 pb-2 border-b border-[#141414] dark:border-neutral-700/15">
                     <Settings className="w-3.5 h-3.5 text-[#F27D26]" /> Campaign Tracking & Analytics Injector
                   </span>
                   
                   <div className="flex flex-col gap-3 mt-3">
-                    <div className="flex items-center gap-2 pb-1 bg-[#D6D5D1]/20 p-2 border border-[#141414]/20">
+                    <div className="flex items-center gap-2 pb-1 bg-[#D6D5D1] dark:bg-neutral-700/20 p-2 border border-[#141414] dark:border-neutral-700/20">
                       <input
                         id="injectToLandingToggle"
                         type="checkbox"
                         checked={trackingConfig.injectToLanding}
                         onChange={e => setTrackingConfig({ ...trackingConfig, injectToLanding: e.target.checked })}
-                        className="w-3.5 h-3.5 accent-[#F27D26] border border-[#141414]"
+                        className="w-3.5 h-3.5 accent-[#F27D26] border border-[#141414] dark:border-neutral-700"
                       />
-                      <label htmlFor="injectToLandingToggle" className="text-[9px] uppercase font-mono font-extrabold text-[#141414] cursor-pointer">
+                      <label htmlFor="injectToLandingToggle" className="text-[9px] uppercase font-mono font-extrabold text-[#141414] dark:text-neutral-200 cursor-pointer">
                         Automate script tagging on compile
                       </label>
                     </div>
 
                     <div>
-                      <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414]/80 mb-1">Google Analytics ID (GA4 ID)</label>
+                      <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414] dark:text-neutral-200/80 mb-1">Google Analytics ID (GA4 ID)</label>
                       <input
                         type="text"
                         placeholder="e.g. G-G3MMA4REF"
                         value={trackingConfig.gaId}
                         onChange={e => setTrackingConfig({ ...trackingConfig, gaId: e.target.value })}
-                        className="w-full text-[10px] p-2 bg-white border border-[#141414] rounded-none font-mono font-semibold text-emerald-800 focus:outline-none"
+                        className="w-full text-[10px] p-2 bg-white border border-[#141414] dark:border-neutral-700 rounded-none font-mono font-semibold text-emerald-800 focus:outline-none"
                       />
                     </div>
 
                     <div>
-                      <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414]/80 mb-1 border-opacity-35">Facebook Pixel ID</label>
+                      <label className="block text-[8.5px] font-mono uppercase font-bold text-[#141414] dark:text-neutral-200/80 mb-1 border-opacity-35">Facebook Pixel ID</label>
                       <input
                         type="text"
                         placeholder="e.g. FB-884820129"
                         value={trackingConfig.fbPixelId}
                         onChange={e => setTrackingConfig({ ...trackingConfig, fbPixelId: e.target.value })}
-                        className="w-full text-[10px] p-2 bg-white border border-[#141414] rounded-none font-mono text-[#141414]/75 focus:outline-none"
+                        className="w-full text-[10px] p-2 bg-white border border-[#141414] dark:border-neutral-700 rounded-none font-mono text-[#141414] dark:text-neutral-200/75 focus:outline-none"
                       />
                     </div>
 
-                    <div className="border-t border-[#141414]/15 pt-2">
-                      <span className="text-[8.5px] font-mono uppercase font-extrabold text-[#141414]/90 block mb-1">Campaign Meta overrides (SEO)</span>
+                    <div className="border-t border-[#141414] dark:border-neutral-700/15 pt-2">
+                      <span className="text-[8.5px] font-mono uppercase font-extrabold text-[#141414] dark:text-neutral-200/90 block mb-1">Campaign Meta overrides (SEO)</span>
                       
-                      <div className="flex flex-col gap-2 bg-[#D6D5D1]/30 p-2 border border-[#141414]/15">
+                      <div className="flex flex-col gap-2 bg-[#D6D5D1] dark:bg-neutral-700/30 p-2 border border-[#141414] dark:border-neutral-700/15">
                         <div>
-                          <label className="block text-[8px] font-mono uppercase font-bold text-[#141414]/70 mb-0.5">Page Title Tag Override</label>
+                          <label className="block text-[8px] font-mono uppercase font-bold text-[#141414] dark:text-neutral-200/70 mb-0.5">Page Title Tag Override</label>
                           <input
                             type="text"
                             placeholder="Defaults to Offer Name"
                             value={trackingConfig.pageTitle}
                             onChange={e => setTrackingConfig({ ...trackingConfig, pageTitle: e.target.value })}
-                            className="w-full text-[9px] p-1.5 bg-white border border-[#141414] rounded-none font-semibold text-[#141414]"
+                            className="w-full text-[9px] p-1.5 bg-white border border-[#141414] dark:border-neutral-700 rounded-none font-semibold text-[#141414] dark:text-neutral-200"
                           />
                         </div>
 
                         <div>
-                          <label className="block text-[8px] font-mono uppercase font-bold text-[#141414]/70 mb-0.5">Page Meta Description Tag</label>
+                          <label className="block text-[8px] font-mono uppercase font-bold text-[#141414] dark:text-neutral-200/70 mb-0.5">Page Meta Description Tag</label>
                           <input
                             type="text"
                             placeholder="Defaults to Value Prop"
                             value={trackingConfig.pageDescription}
                             onChange={e => setTrackingConfig({ ...trackingConfig, pageDescription: e.target.value })}
-                            className="w-full text-[9px] p-1.5 bg-white border border-[#141414] rounded-none text-[#141414]"
+                            className="w-full text-[9px] p-1.5 bg-white border border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200"
                           />
                         </div>
 
                         <div>
-                          <label className="block text-[8px] font-mono uppercase font-bold text-[#141414]/70 mb-0.5">Open Graph Preview Image URL</label>
+                          <label className="block text-[8px] font-mono uppercase font-bold text-[#141414] dark:text-neutral-200/70 mb-0.5">Open Graph Preview Image URL</label>
                           <input
                             type="text"
                             placeholder="https://...image.jpg"
                             value={trackingConfig.ogImage}
                             onChange={e => setTrackingConfig({ ...trackingConfig, ogImage: e.target.value })}
-                            className="w-full text-[8.5px] p-1.5 bg-white border border-[#141414] rounded-none font-mono text-[#141414]"
+                            className="w-full text-[8.5px] p-1.5 bg-white border border-[#141414] dark:border-neutral-700 rounded-none font-mono text-[#141414] dark:text-neutral-200"
                           />
                         </div>
 
                         <div>
-                          <label className="block text-[8px] font-mono uppercase font-bold text-[#141414]/70 mb-0.5">Custom Raw tags inside &lt;head&gt;</label>
+                          <label className="block text-[8px] font-mono uppercase font-bold text-[#141414] dark:text-neutral-200/70 mb-0.5">Custom Raw tags inside &lt;head&gt;</label>
                           <textarea
                             rows={2}
                             placeholder="<!-- e.g. custom meta fields -->"
                             value={trackingConfig.customHeadTags}
                             onChange={e => setTrackingConfig({ ...trackingConfig, customHeadTags: e.target.value })}
-                            className="w-full text-[8.5px] p-1.5 bg-white border border-[#141414] rounded-none font-mono text-[#141414]"
+                            className="w-full text-[8.5px] p-1.5 bg-white border border-[#141414] dark:border-neutral-700 rounded-none font-mono text-[#141414] dark:text-neutral-200"
                           />
                         </div>
                       </div>
@@ -2100,74 +2231,118 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                 </div>
 
                 {/* Landing Parameters */}
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-5 rounded-none brutalist-shadow">
-                  <h3 className="font-serif italic font-extrabold text-[#141414] text-base tracking-tight mb-4 flex items-center justify-between">
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-5 rounded-none brutalist-shadow">
+                  <h3 className="font-serif italic font-extrabold text-[#141414] dark:text-neutral-200 text-base tracking-tight mb-4 flex items-center justify-between">
                     <span>Landing Page Parameters</span>
-                    <span className="text-[9px] bg-[#141414] text-[#E4E3E0] px-1.5 font-mono font-bold uppercase">PAGE-OS</span>
+                    <span className="text-[9px] bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] px-1.5 font-mono font-bold uppercase">PAGE-OS</span>
                   </h3>
 
                   <div className="flex flex-col gap-4">
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">Offer / Startup Name</label>
+                      <label className="flex items-center justify-between text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">
+                        <span>Offer / Startup Name</span>
+                        <button onClick={() => autoGenerateLandingField("offerName", "Headline / Startup Name")} disabled={isGeneratingField.offerName} className="flex items-center gap-1 text-[8px] text-[#F27D26] hover:text-[#141414] dark:hover:text-neutral-200 hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                          {isGeneratingField.offerName ? <RefreshCw className="w-2.5 h-2.5 animate-spin"/> : <Wand2 className="w-2.5 h-2.5"/>} AI Gen
+                        </button>
+                      </label>
                       <input
                         type="text"
                         placeholder="e.g. Fitbit Pro or HabitTracker Premium"
                         value={landingForm.offerName}
                         onChange={e => setLandingForm({ ...landingForm, offerName: e.target.value })}
-                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0]/20 font-sans font-bold"
+                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/20 font-sans font-bold"
                       />
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">Core Value Proposition</label>
+                      <label className="flex items-center justify-between text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">
+                        <span>Core Value Proposition</span>
+                        <button onClick={() => autoGenerateLandingField("valueProp", "Value Proposition / Body Copy")} disabled={isGeneratingField.valueProp} className="flex items-center gap-1 text-[8px] text-[#F27D26] hover:text-[#141414] dark:hover:text-neutral-200 hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                          {isGeneratingField.valueProp ? <RefreshCw className="w-2.5 h-2.5 animate-spin"/> : <Wand2 className="w-2.5 h-2.5"/>} AI Gen
+                        </button>
+                      </label>
                       <textarea
                         rows={3}
                         placeholder="e.g. The definitive smart ring integration for local system analysts needing 24/7 biometric reports..."
                         value={landingForm.valueProp}
                         onChange={e => setLandingForm({ ...landingForm, valueProp: e.target.value })}
-                        className="w-full text-xs py-2 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0]/20 font-sans"
+                        className="w-full text-xs py-2 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/20 font-sans"
                       />
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">Primary Call-to-Action Text</label>
+                      <label className="flex items-center justify-between text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">
+                        <span>Primary Call-to-Action Text</span>
+                        <button onClick={() => autoGenerateLandingField("ctaText", "Primary CTA Button Text")} disabled={isGeneratingField.ctaText} className="flex items-center gap-1 text-[8px] text-[#F27D26] hover:text-[#141414] dark:hover:text-neutral-200 hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                          {isGeneratingField.ctaText ? <RefreshCw className="w-2.5 h-2.5 animate-spin"/> : <Wand2 className="w-2.5 h-2.5"/>} AI Gen
+                        </button>
+                      </label>
                       <input
                         type="text"
                         placeholder="e.g. Get Started Instantly"
                         value={landingForm.ctaText}
                         onChange={e => setLandingForm({ ...landingForm, ctaText: e.target.value })}
-                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0]/20 font-sans"
+                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/20 font-sans"
                       />
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">Major Features (Comma separated)</label>
+                      <label className="flex items-center justify-between text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">
+                        <span>Major Features (Comma separated)</span>
+                        <button onClick={() => autoGenerateLandingField("features", "Benefit-driven Bullet Points")} disabled={isGeneratingField.features} className="flex items-center gap-1 text-[8px] text-[#F27D26] hover:text-[#141414] dark:hover:text-neutral-200 hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                          {isGeneratingField.features ? <RefreshCw className="w-2.5 h-2.5 animate-spin"/> : <Wand2 className="w-2.5 h-2.5"/>} AI Gen
+                        </button>
+                      </label>
                       <textarea
                         rows={3}
                         placeholder="e.g. Real-time biometrics feed, Offline sqlite storage, Zero cloud fees, Low memory footprint"
                         value={landingForm.features}
                         onChange={e => setLandingForm({ ...landingForm, features: e.target.value })}
-                        className="w-full text-xs py-2 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0]/20 font-sans"
+                        className="w-full text-xs py-2 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/20 font-sans"
                       />
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">Target Audience</label>
+                      <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">Target Audience</label>
                       <input
                         type="text"
                         placeholder="e.g. health conscious software developers, biohackers"
                         value={landingForm.audience}
                         onChange={e => setLandingForm({ ...landingForm, audience: e.target.value })}
-                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0]/20 font-sans"
+                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/20 font-sans"
                       />
                     </div>
 
-                    <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold font-bold">Visual Design Theme</label>
+                    <div className="border-t border-[#141414] dark:border-neutral-700/15 pt-4 mt-1">
+                      <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold text-emerald-700 dark:text-emerald-400">Affiliate / Promo Link Integration</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. https://provider.com/ref?id=123"
+                        value={landingForm.affiliateLink}
+                        onChange={e => setLandingForm({ ...landingForm, affiliateLink: e.target.value })}
+                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 placeholder-[#141414]/40 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/20 font-mono font-bold text-emerald-700 dark:text-emerald-500"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2 mt-1">
+                      <input
+                        id="enableLeadCapture"
+                        type="checkbox"
+                        checked={landingForm.enableLeadCapture}
+                        onChange={e => setLandingForm({ ...landingForm, enableLeadCapture: e.target.checked })}
+                        className="w-4 h-4 accent-[#F27D26] border-2 border-[#141414] dark:border-neutral-700 cursor-pointer"
+                      />
+                      <label htmlFor="enableLeadCapture" className="text-[10px] uppercase font-mono font-extrabold text-[#141414] dark:text-neutral-200 cursor-pointer select-none">
+                        Include Lead Capture Form Generator
+                      </label>
+                    </div>
+
+                    <div className="border-t border-[#141414] dark:border-neutral-700/15 pt-4 mt-1">
+                      <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold font-bold">Visual Design Theme</label>
                       <select
                         value={landingForm.styleTheme}
                         onChange={e => setLandingForm({ ...landingForm, styleTheme: e.target.value as any })}
-                        className="w-full text-[11px] py-2 px-2.5 bg-white border-2 border-[#141414] rounded-none text-[#141414] font-bold focus:outline-none"
+                        className="w-full text-[11px] py-2 px-2.5 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-bold focus:outline-none"
                       >
                         <option value="Slate SaaS">Slate SaaS (Clean dark slate + indigo buttons)</option>
                         <option value="Emerald E-Commerce">Emerald Product (Luxury dark gray + emerald green)</option>
@@ -2179,7 +2354,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                     <button
                       onClick={generateLandingPage}
                       disabled={isGeneratingLanding}
-                      className="w-full py-3 px-4 bg-[#141414] text-[#E4E3E0] hover:bg-[#F27D26] hover:text-[#141414] disabled:opacity-50 rounded-none font-mono font-bold text-xs uppercase shadow-none tracking-wider border-2 border-[#141414] transition-all cursor-pointer select-none flex items-center justify-center gap-2 brutalist-shadow-sm"
+                      className="w-full py-3 px-4 bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] hover:bg-[#F27D26] hover:text-[#141414] dark:text-neutral-200 disabled:opacity-50 rounded-none font-mono font-bold text-xs uppercase shadow-none tracking-wider border-2 border-[#141414] dark:border-neutral-700 transition-all cursor-pointer select-none flex items-center justify-center gap-2 brutalist-shadow-sm"
                     >
                       {isGeneratingLanding ? (
                         <>
@@ -2201,21 +2376,21 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
               <div className="xl:col-span-8 flex flex-col gap-6">
                 
                 {/* Right Tab Toggle Frame */}
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-5 rounded-none brutalist-shadow flex-1 flex flex-col min-h-[550px]">
-                  <div className="flex flex-col sm:flex-row items-center justify-between gap-4 border-b-2 border-[#141414] pb-4 mb-4 select-none">
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-5 rounded-none brutalist-shadow flex-1 flex flex-col min-h-[550px]">
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-4 border-b-2 border-[#141414] dark:border-neutral-700 pb-4 mb-4 select-none">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono text-[#141414] uppercase tracking-wider font-extrabold flex items-center gap-1.5">
+                      <span className="text-xs font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold flex items-center gap-1.5">
                         <Terminal className="w-4 h-4 text-[#F27D26]" /> Page Designer Workspace
                       </span>
                     </div>
 
-                    <div className="flex items-center gap-1 bg-[#D6D5D1] p-1 border-2 border-[#141414] rounded-none shrink-0">
+                    <div className="flex items-center gap-1 bg-[#D6D5D1] dark:bg-neutral-700 p-1 border-2 border-[#141414] dark:border-neutral-700 rounded-none shrink-0">
                       <button
                         onClick={() => setActivePreviewTab("preview")}
                         className={`px-3 py-1.5 rounded-none text-xs font-mono font-bold transition-all cursor-pointer ${
                           activePreviewTab === "preview" 
-                            ? "bg-[#141414] text-[#E4E3E0]" 
-                            : "text-[#141414] hover:bg-[#141414]/10"
+                            ? "bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0]" 
+                            : "text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f]/10"
                         }`}
                       >
                         Live Preview (Interactive)
@@ -2224,8 +2399,8 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                         onClick={() => setActivePreviewTab("code")}
                         className={`px-3 py-1.5 rounded-none text-xs font-mono font-bold transition-all cursor-pointer ${
                           activePreviewTab === "code" 
-                            ? "bg-[#141414] text-[#E4E3E0]" 
-                            : "text-[#141414] hover:bg-[#141414]/10"
+                            ? "bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0]" 
+                            : "text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f]/10"
                         }`}
                       >
                         Edit Source Code
@@ -2236,14 +2411,14 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                       <div className="flex gap-2 shrink-0">
                         <button
                           onClick={copyHtmlText}
-                          className="bg-[#141414] border-2 border-[#141414] hover:bg-[#F5F4F0] hover:text-[#141414] p-2 text-[#E4E3E0] transition-all flex items-center gap-1.1 text-xs font-mono font-bold uppercase rounded-none"
+                          className="bg-[#141414] dark:bg-[#1f1f1f] border-2 border-[#141414] dark:border-neutral-700 hover:bg-[#F5F4F0] dark:bg-neutral-800 hover:text-[#141414] dark:text-neutral-200 p-2 text-[#E4E3E0] dark:text-[#a0a0a0] transition-all flex items-center gap-1.1 text-xs font-mono font-bold uppercase rounded-none"
                         >
                           {copiedHtml ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
                           <span>{copiedHtml ? "Copied" : "Copy HTML"}</span>
                         </button>
                         <button
                           onClick={downloadHtmlFile}
-                          className="bg-white border-2 border-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0] p-2 text-[#141414] transition-all flex items-center gap-1 text-xs font-mono font-bold uppercase rounded-none"
+                          className="bg-white border-2 border-[#141414] dark:border-neutral-700 hover:bg-[#141414] dark:bg-[#1f1f1f] hover:text-[#E4E3E0] dark:text-[#a0a0a0] p-2 text-[#141414] dark:text-neutral-200 transition-all flex items-center gap-1 text-xs font-mono font-bold uppercase rounded-none"
                         >
                           <Download className="w-3.5 h-3.5" />
                           <span>index.html</span>
@@ -2255,9 +2430,9 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                   {/* Rendering Content */}
                   {isGeneratingLanding ? (
                     <div className="flex-1 flex flex-col items-center justify-center py-24 text-center">
-                      <RefreshCw className="w-12 h-12 text-[#141414] animate-spin mb-4" />
-                      <p className="font-serif italic font-extrabold text-[#141414] text-base">Weaving Digital Real Estate</p>
-                      <p className="text-xs text-[#141414]/70 mt-1.5 font-mono max-w-sm">
+                      <RefreshCw className="w-12 h-12 text-[#141414] dark:text-neutral-200 animate-spin mb-4" />
+                      <p className="font-serif italic font-extrabold text-[#141414] dark:text-neutral-200 text-base">Weaving Digital Real Estate</p>
+                      <p className="text-xs text-[#141414] dark:text-neutral-200/70 mt-1.5 font-mono max-w-sm">
                         Assembling page structure, writing inline responsive frameworks, and adding custom call-to-action handlers.
                       </p>
                     </div>
@@ -2265,7 +2440,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                     <div className="flex-1 flex flex-col gap-4">
                       
                       {activePreviewTab === "preview" ? (
-                        <div className="flex-1 border-2 border-[#141414] rounded-none bg-white overflow-hidden min-h-[420px] relative">
+                        <div className="flex-1 border-2 border-[#141414] dark:border-neutral-700 rounded-none bg-white overflow-hidden min-h-[420px] relative">
                           <iframe
                             className="w-full h-full min-h-[420px] bg-slate-950"
                             srcDoc={landingHtmlEditor || generatedHtml}
@@ -2275,23 +2450,23 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                         </div>
                       ) : (
                         <div className="flex-1 flex flex-col gap-2">
-                           <div className="p-2 border-2 border-[#141414] bg-[#D6D5D1] text-[10px] font-mono text-[#141414] font-bold rounded-none">
+                           <div className="p-2 border-2 border-[#141414] dark:border-neutral-700 bg-[#D6D5D1] dark:bg-neutral-700 text-[10px] font-mono text-[#141414] dark:text-neutral-200 font-bold rounded-none">
                             ⚠️ MANUAL SOURCE COMPILER INDESTRUCTIBLES: You can make styling updates and CTA modifications directly below. Changes apply to the simulation in real-time.
                           </div>
                           <textarea
                             rows={15}
                             value={landingHtmlEditor}
                             onChange={(e) => setLandingHtmlEditor(e.target.value)}
-                            className="w-full h-full min-h-[380px] p-4 bg-white border-2 border-[#141414] rounded-none font-mono text-xs text-[#141414] focus:outline-none focus:bg-[#E4E3E0]/10 leading-relaxed font-bold overflow-y-auto"
+                            className="w-full h-full min-h-[380px] p-4 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none font-mono text-xs text-[#141414] dark:text-neutral-200 focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/10 leading-relaxed font-bold overflow-y-auto"
                           />
                         </div>
                       )}
                     </div>
                   ) : (
-                    <div className="flex-1 flex flex-col items-center justify-center py-24 text-center border-2 border-dashed border-[#141414]/30 rounded-none bg-[#D6D5D1]/10 select-none">
-                      <Globe className="w-12 h-12 text-[#141414]/40 mb-3" />
-                      <p className="font-serif italic font-extrabold text-[#141414] text-sm">No Landing Page Synthesized</p>
-                      <p className="text-xs text-[#141414]/70 max-w-sm mt-1 font-mono">
+                    <div className="flex-1 flex flex-col items-center justify-center py-24 text-center border-2 border-dashed border-[#141414] dark:border-neutral-700/30 rounded-none bg-[#D6D5D1] dark:bg-neutral-700/10 select-none">
+                      <Globe className="w-12 h-12 text-[#141414] dark:text-neutral-200/40 mb-3" />
+                      <p className="font-serif italic font-extrabold text-[#141414] dark:text-neutral-200 text-sm">No Landing Page Synthesized</p>
+                      <p className="text-xs text-[#141414] dark:text-neutral-200/70 max-w-sm mt-1 font-mono">
                         Select a recommended page preset or type in your value proposition parameters and click generate!
                       </p>
                     </div>
@@ -2300,9 +2475,9 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
 
                 {/* Local Landing History logs - High Density Ledger */}
                 {landingHistory.length > 0 && (
-                  <div className="bg-[#D6D5D1] border-2 border-[#141414] p-4 rounded-none brutalist-shadow select-none">
-                    <div className="flex items-center justify-between mb-3 border-b border-[#141414]/15 pb-2">
-                      <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold flex items-center gap-1.5">
+                  <div className="bg-[#D6D5D1] dark:bg-neutral-700 border-2 border-[#141414] dark:border-neutral-700 p-4 rounded-none brutalist-shadow select-none">
+                    <div className="flex items-center justify-between mb-3 border-b border-[#141414] dark:border-neutral-700/15 pb-2">
+                      <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold flex items-center gap-1.5">
                         <Activity className="w-4 h-4 text-[#F27D26]" /> Page Design Repositories ({landingHistory.length})
                       </span>
                       <button
@@ -2310,15 +2485,15 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                           setLandingHistory([]);
                           localStorage.removeItem("gemma_landing_history");
                         }}
-                        className="text-[#141414]/60 hover:text-red-700 text-[10px] uppercase font-mono font-bold flex items-center gap-1 cursor-pointer"
+                        className="text-[#141414] dark:text-neutral-200/60 hover:text-red-700 text-[10px] uppercase font-mono font-bold flex items-center gap-1 cursor-pointer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                         Clear Repos
                       </button>
                     </div>
 
-                    <div className="flex flex-col border border-[#141414]">
-                      <div className="grid grid-cols-12 text-[9px] uppercase font-mono font-extrabold tracking-tight bg-[#141414] text-[#E4E3E0] px-3 py-1.5">
+                    <div className="flex flex-col border border-[#141414] dark:border-neutral-700">
+                      <div className="grid grid-cols-12 text-[9px] uppercase font-mono font-extrabold tracking-tight bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] px-3 py-1.5">
                         <span className="col-span-5">CAMPAIGN OFFER</span>
                         <span className="col-span-5">DESIGN VISUAL THEME</span>
                         <span className="col-span-2 text-right">ACTION</span>
@@ -2327,7 +2502,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                         {landingHistory.map((ltem) => (
                           <div
                             key={ltem.id}
-                            className="grid grid-cols-12 px-3 py-2.5 items-center hover:bg-[#141414] hover:text-[#E4E3E0] transition-all cursor-pointer group"
+                            className="grid grid-cols-12 px-3 py-2.5 items-center hover:bg-[#141414] dark:bg-[#1f1f1f] hover:text-[#E4E3E0] dark:text-[#a0a0a0] transition-all cursor-pointer group"
                             onClick={() => {
                               setGeneratedHtml(ltem.generatedHtml || "");
                               setLandingHtmlEditor(ltem.generatedHtml || "");
@@ -2341,10 +2516,10 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                               });
                             }}
                           >
-                            <span className="col-span-5 font-bold uppercase truncate pr-3 text-[#141414] group-hover:text-inherit">{ltem.offerName}</span>
+                            <span className="col-span-5 font-bold uppercase truncate pr-3 text-[#141414] dark:text-neutral-200 group-hover:text-inherit">{ltem.offerName}</span>
                             <span className="col-span-5 text-[10px] uppercase text-[#F27D26] group-hover:text-[#F27D26] font-bold truncate">{ltem.styleTheme}</span>
                             <span className="col-span-2 text-right">
-                              <span className="inline-block px-1.5 py-0.5 text-[9px] font-bold uppercase bg-[#141414] text-[#E4E3E0] border border-[#141414] group-hover:bg-[#E4E3E0] group-hover:text-[#141414]">
+                              <span className="inline-block px-1.5 py-0.5 text-[9px] font-bold uppercase bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] border border-[#141414] dark:border-neutral-700 group-hover:bg-[#E4E3E0] dark:bg-neutral-900 group-hover:text-[#141414] dark:text-neutral-200">
                                 RESTORE
                               </span>
                             </span>
@@ -2356,9 +2531,9 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                 )}
 
                 {/* Simulated Conversion Subscriber Leads Database */}
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-4 rounded-none brutalist-shadow select-none mt-6">
-                  <div className="flex items-center justify-between mb-3 border-b border-[#141414]/15 pb-2">
-                    <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold flex items-center gap-1.5">
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-4 rounded-none brutalist-shadow select-none mt-6">
+                  <div className="flex items-center justify-between mb-3 border-b border-[#141414] dark:border-neutral-700/15 pb-2">
+                    <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold flex items-center gap-1.5">
                       <Briefcase className="w-4 h-4 text-[#F27D26]" /> Subscriber Leads database (Conversion Ledger)
                     </span>
                     <div className="flex items-center gap-2">
@@ -2369,16 +2544,16 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                       >
                         <Download className="w-2.5 h-2.5" /> CSV Export
                       </button>
-                      <span className="bg-[#141414] text-[#E4E3E0] px-1.5 py-0.5 text-[9px] font-mono font-bold uppercase">{capturedLeads.length} Subscriber Conversions</span>
+                      <span className="bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] px-1.5 py-0.5 text-[9px] font-mono font-bold uppercase">{capturedLeads.length} Subscriber Conversions</span>
                     </div>
                   </div>
 
-                  <p className="text-[9.5px] text-[#141414]/70 mb-3 font-sans leading-relaxed">
+                  <p className="text-[9.5px] text-[#141414] dark:text-neutral-200/70 mb-3 font-sans leading-relaxed">
                     Captured from forms in the Iframe Simulator preview in real-time. Feel free to fill out the email signup box inside your live-compiled template and submit! Leads are instantly cataloged below.
                   </p>
 
-                  <div className="flex flex-col border border-[#141414]">
-                    <div className="grid grid-cols-12 text-[9px] uppercase font-mono font-extrabold bg-[#141414] text-[#E4E3E0] px-3 py-1.5">
+                  <div className="flex flex-col border border-[#141414] dark:border-neutral-700">
+                    <div className="grid grid-cols-12 text-[9px] uppercase font-mono font-extrabold bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] px-3 py-1.5">
                       <span className="col-span-4">Email Address</span>
                       <span className="col-span-3">Subscriber Name</span>
                       <span className="col-span-3">Offer Source Origin</span>
@@ -2387,19 +2562,19 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
 
                     <div className="flex flex-col max-h-48 overflow-y-auto bg-white font-mono text-[11px] divide-y divide-[#141414]/10">
                       {capturedLeads.length === 0 ? (
-                        <p className="text-center py-6 text-[10px] text-[#141414]/40 italic">No subscriber signups recorded yet. Try submitting the signup form in the active preview iframe!</p>
+                        <p className="text-center py-6 text-[10px] text-[#141414] dark:text-neutral-200/40 italic">No subscriber signups recorded yet. Try submitting the signup form in the active preview iframe!</p>
                       ) : (
                         capturedLeads.map((lead) => (
-                          <div key={lead.id} className="grid grid-cols-12 px-3 py-2 items-center hover:bg-[#D6D5D1]/30 transition-all text-[#141414]">
+                          <div key={lead.id} className="grid grid-cols-12 px-3 py-2 items-center hover:bg-[#D6D5D1] dark:bg-neutral-700/30 transition-all text-[#141414] dark:text-neutral-200">
                             <span className="col-span-4 font-bold select-all truncate pr-2 text-emerald-800">{lead.email}</span>
-                            <span className="col-span-3 text-[10px] font-sans font-medium text-[#141414]/90 truncate">{lead.name}</span>
-                            <span className="col-span-3 text-[9px] text-[#141414]/65 truncate">{lead.offerName}</span>
+                            <span className="col-span-3 text-[10px] font-sans font-medium text-[#141414] dark:text-neutral-200/90 truncate">{lead.name}</span>
+                            <span className="col-span-3 text-[9px] text-[#141414] dark:text-neutral-200/65 truncate">{lead.offerName}</span>
                             <span className="col-span-2 text-right">
                               <button
                                 onClick={() => {
                                   setCapturedLeads(prev => prev.filter(l => l.id !== lead.id));
                                 }}
-                                className="text-[#141414]/40 hover:text-red-700 p-1 cursor-pointer inline-block"
+                                className="text-[#141414] dark:text-neutral-200/40 hover:text-red-700 p-1 cursor-pointer inline-block"
                                 title="Remove subscriber"
                               >
                                 <Trash2 className="w-3.5 h-3.5 mx-auto" />
@@ -2421,41 +2596,41 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
             <div className="max-w-4xl mx-auto flex flex-col gap-6">
               
               {/* Main setup helper */}
-              <div className="bg-[#F5F4F0] border-2 border-[#141414] p-6 rounded-none brutalist-shadow select-none">
-                <div className="flex items-center gap-3 border-b-2 border-[#141414] pb-4 mb-6">
+              <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-6 rounded-none brutalist-shadow select-none">
+                <div className="flex items-center gap-3 border-b-2 border-[#141414] dark:border-neutral-700 pb-4 mb-6">
                   <Terminal className="w-6 h-6 text-[#F27D26]" />
                   <div>
-                    <h2 className="font-serif italic font-extrabold text-lg text-[#141414]">Local Gemma Connection & CORS Configuration</h2>
-                    <p className="text-[10px] uppercase text-[#141414]/60 font-mono font-bold">Ollama Port mapping and runtime environmental settings</p>
+                    <h2 className="font-serif italic font-extrabold text-lg text-[#141414] dark:text-neutral-200">Local Gemma Connection & CORS Configuration</h2>
+                    <p className="text-[10px] uppercase text-[#141414] dark:text-neutral-200/60 font-mono font-bold">Ollama Port mapping and runtime environmental settings</p>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
                   
                   {/* Left Side settings change */}
-                  <div className="flex flex-col gap-5 bg-[#D6D5D1] p-5 rounded-none border-2 border-[#141414]">
-                    <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold">
+                  <div className="flex flex-col gap-5 bg-[#D6D5D1] dark:bg-neutral-700 p-5 rounded-none border-2 border-[#141414] dark:border-neutral-700">
+                    <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold">
                       Connection Parameters
                     </span>
 
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">API Endpoint Address</label>
+                      <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">API Endpoint Address</label>
                       <input
                         type="text"
                         value={connection.localEndpoint}
                         onChange={(e) => setConnection({ ...connection, localEndpoint: e.target.value })}
-                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] font-mono focus:outline-none focus:bg-[#E4E3E0]/25 font-bold"
+                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-mono focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/25 font-bold"
                         placeholder="http://localhost:11434/api/generate"
                       />
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">Local Model Reference Name</label>
+                      <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">Local Model Reference Name</label>
                       <input
                         type="text"
                         value={connection.localModelName}
                         onChange={(e) => setConnection({ ...connection, localModelName: e.target.value })}
-                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] font-mono focus:outline-none focus:bg-[#E4E3E0]/25 font-bold"
+                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-mono focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/25 font-bold"
                         placeholder="gemma2.5 or gemma:2b"
                       />
                     </div>
@@ -2464,7 +2639,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                       <button
                         onClick={testLocalOllamaConnection}
                         disabled={isTestingLocal}
-                        className="w-full py-2.5 px-4 bg-[#141414] text-[#E4E3E0] hover:bg-[#F27D26] hover:text-[#141414] font-bold text-xs rounded-none transition-all flex items-center justify-center gap-2 border-2 border-[#141414] font-mono uppercase cursor-pointer"
+                        className="w-full py-2.5 px-4 bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] hover:bg-[#F27D26] hover:text-[#141414] dark:text-neutral-200 font-bold text-xs rounded-none transition-all flex items-center justify-center gap-2 border-2 border-[#141414] dark:border-neutral-700 font-mono uppercase cursor-pointer"
                       >
                         <RefreshCw className={`w-3.5 h-3.5 ${isTestingLocal ? "animate-spin" : ""}`} />
                         <span>{isTestingLocal ? "Pinging Endpoint..." : "Test Local Host Response"}</span>
@@ -2487,116 +2662,116 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
 
                   {/* Right Side guide instructions */}
                   <div className="flex flex-col gap-4 font-mono text-xs">
-                    <span className="text-[10px] text-[#141414] uppercase tracking-wider font-extrabold">
+                    <span className="text-[10px] text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold">
                       CORS & Security Settings Guide
                     </span>
 
-                    <p className="text-[#141414] leading-relaxed font-sans text-xs">
+                    <p className="text-[#141414] dark:text-neutral-200 leading-relaxed font-sans text-xs">
                       Because this suite is run securely over HTTPS, your browser's strict <b>CORS policies</b> will block any request to <code>http://localhost:11434</code> unless Ollama is explicitly told to permit connections.
                     </p>
 
-                    <p className="text-[#141414]/80 leading-relaxed font-bold uppercase text-[10px] tracking-tight">
+                    <p className="text-[#141414] dark:text-neutral-200/80 leading-relaxed font-bold uppercase text-[10px] tracking-tight">
                       To make your local model accessible to this interface, run Ollama with the appropriate environment variable based on your platform:
                     </p>
 
                     {/* Windows Command Instructions */}
-                    <div className="bg-[#D6D5D1] p-4 rounded-none border-2 border-[#141414]">
-                      <span className="text-[10px] bg-[#141414] text-[#E4E3E0] px-1.5 py-0.5 rounded-none font-mono font-extrabold">
+                    <div className="bg-[#D6D5D1] dark:bg-neutral-700 p-4 rounded-none border-2 border-[#141414] dark:border-neutral-700">
+                      <span className="text-[10px] bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] px-1.5 py-0.5 rounded-none font-mono font-extrabold">
                         WINDOWS (PowerShell)
                       </span>
-                      <p className="text-[9px] font-sans text-[#141414]/85 mt-1.5">Run these as two separate commands, or separate them with a semicolon:</p>
-                      <pre className="text-[11px] text-[#141414] font-mono mt-1.5 break-all whitespace-pre-wrap leading-tight bg-white border border-[#141414] p-3 rounded-none font-bold">
+                      <p className="text-[9px] font-sans text-[#141414] dark:text-neutral-200/85 mt-1.5">Run these as two separate commands, or separate them with a semicolon:</p>
+                      <pre className="text-[11px] text-[#141414] dark:text-neutral-200 font-mono mt-1.5 break-all whitespace-pre-wrap leading-tight bg-white border border-[#141414] dark:border-neutral-700 p-3 rounded-none font-bold">
                         {`$env:OLLAMA_ORIGINS="*"\nollama serve`}
                       </pre>
-                      <p className="text-[9px] font-sans text-[#141414]/85 mt-2">Single-line PowerShell command:</p>
-                      <pre className="text-[11px] text-[#141414] font-mono mt-1 break-all whitespace-pre-wrap leading-tight bg-white border border-[#141414] p-2 rounded-none font-bold">
+                      <p className="text-[9px] font-sans text-[#141414] dark:text-neutral-200/85 mt-2">Single-line PowerShell command:</p>
+                      <pre className="text-[11px] text-[#141414] dark:text-neutral-200 font-mono mt-1 break-all whitespace-pre-wrap leading-tight bg-white border border-[#141414] dark:border-neutral-700 p-2 rounded-none font-bold">
                         {`$env:OLLAMA_ORIGINS="*"; ollama serve`}
                       </pre>
-                      <p className="text-[9px] text-[#141414]/65 font-mono mt-1">Make sure to shut down other instances of Ollama running in the background/system tray first!</p>
+                      <p className="text-[9px] text-[#141414] dark:text-neutral-200/65 font-mono mt-1">Make sure to shut down other instances of Ollama running in the background/system tray first!</p>
                     </div>
 
                     {/* MacOS Terminal Instructions */}
-                    <div className="bg-[#D6D5D1] p-4 rounded-none border-2 border-[#141414]">
-                      <span className="text-[10px] bg-[#141414] text-[#E4E3E0] px-1.5 py-0.5 rounded-none font-mono font-extrabold">
+                    <div className="bg-[#D6D5D1] dark:bg-neutral-700 p-4 rounded-none border-2 border-[#141414] dark:border-neutral-700">
+                      <span className="text-[10px] bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] px-1.5 py-0.5 rounded-none font-mono font-extrabold">
                         MACOS (Terminal)
                       </span>
-                      <pre className="text-[11px] text-[#141414] font-mono mt-2 break-all whitespace-pre-wrap leading-tight bg-white border border-[#141414] p-3 rounded-none font-bold">
+                      <pre className="text-[11px] text-[#141414] dark:text-neutral-200 font-mono mt-2 break-all whitespace-pre-wrap leading-tight bg-white border border-[#141414] dark:border-neutral-700 p-3 rounded-none font-bold">
                         {`OLLAMA_ORIGINS="*" ollama serve`}
                       </pre>
-                      <p className="text-[9px] text-[#141414]/65 font-mono mt-1">Kill any current Ollama process, then execute in Terminal.</p>
+                      <p className="text-[9px] text-[#141414] dark:text-neutral-200/65 font-mono mt-1">Kill any current Ollama process, then execute in Terminal.</p>
                     </div>
                   </div>
                 </div>
               </div>
 
               {/* Custom MCP Servers Workspace */}
-              <div className="bg-[#F5F4F0] border-2 border-[#141414] p-6 rounded-none brutalist-shadow select-none">
-                <div className="flex items-center gap-3 border-b-2 border-[#141414] pb-4 mb-6">
+              <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-6 rounded-none brutalist-shadow select-none">
+                <div className="flex items-center gap-3 border-b-2 border-[#141414] dark:border-neutral-700 pb-4 mb-6">
                   <Cpu className="w-6 h-6 text-[#F27D26]" />
                   <div>
-                    <h2 className="font-serif italic font-extrabold text-lg text-[#141414]">Custom Model Context Protocol (MCP) Servers</h2>
-                    <p className="text-[10px] uppercase text-[#141414]/60 font-mono font-bold">Register stdio/sse local file search or service integrations</p>
+                    <h2 className="font-serif italic font-extrabold text-lg text-[#141414] dark:text-neutral-200">Custom Model Context Protocol (MCP) Servers</h2>
+                    <p className="text-[10px] uppercase text-[#141414] dark:text-neutral-200/60 font-mono font-bold">Register stdio/sse local file search or service integrations</p>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
                   {/* Left Column: Register MCP */}
-                  <form onSubmit={handleAddMcpServer} className="flex flex-col gap-5 bg-[#D6D5D1] p-5 rounded-none border-2 border-[#141414]">
-                    <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold">
+                  <form onSubmit={handleAddMcpServer} className="flex flex-col gap-5 bg-[#D6D5D1] dark:bg-neutral-700 p-5 rounded-none border-2 border-[#141414] dark:border-neutral-700">
+                    <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold">
                       Add MCP Configuration
                     </span>
 
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">Server Name ID</label>
+                      <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">Server Name ID</label>
                       <input
                         type="text"
                         placeholder="e.g. gemma-filesystem-tool"
                         value={newMcp.name}
                         onChange={e => setNewMcp({ ...newMcp, name: e.target.value })}
-                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] font-mono focus:outline-none focus:bg-[#E4E3E0]/25 font-bold"
+                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-mono focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/25 font-bold"
                         required
                       />
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">Transport Type</label>
+                        <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">Transport Type</label>
                         <select
                           value={newMcp.type}
                           onChange={e => setNewMcp({ ...newMcp, type: e.target.value as any })}
-                          className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] font-mono focus:outline-none font-bold"
+                          className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-mono focus:outline-none font-bold"
                         >
                           <option value="stdio">Stdio Command</option>
                           <option value="sse">SSE Endpoint URL</option>
                         </select>
                       </div>
                       <div>
-                        <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">Arguments (optional)</label>
+                        <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">Arguments (optional)</label>
                         <input
                           type="text"
                           placeholder="e.g. --path /desktop"
                           value={newMcp.args}
                           onChange={e => setNewMcp({ ...newMcp, args: e.target.value })}
-                          className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] font-mono focus:outline-none focus:bg-[#E4E3E0]/25 font-bold"
+                          className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-mono focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/25 font-bold"
                         />
                       </div>
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">Exec Command or SSE Gateway Endpoint</label>
+                      <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">Exec Command or SSE Gateway Endpoint</label>
                       <input
                         type="text"
                         placeholder="e.g. npx @modelcontextprotocol/server-filesystem"
                         value={newMcp.commandOrUrl}
                         onChange={e => setNewMcp({ ...newMcp, commandOrUrl: e.target.value })}
-                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] font-mono focus:outline-none focus:bg-[#E4E3E0]/25 font-bold"
+                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-mono focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/25 font-bold"
                         required
                       />
                     </div>
 
                     <button
                       type="submit"
-                      className="w-full py-2.5 px-4 bg-[#141414] text-[#E4E3E0] hover:bg-[#F27D26] hover:text-[#141414] font-bold text-xs rounded-none transition-all flex items-center justify-center gap-2 border-2 border-[#141414] font-mono uppercase cursor-pointer"
+                      className="w-full py-2.5 px-4 bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] hover:bg-[#F27D26] hover:text-[#141414] dark:text-neutral-200 font-bold text-xs rounded-none transition-all flex items-center justify-center gap-2 border-2 border-[#141414] dark:border-neutral-700 font-mono uppercase cursor-pointer"
                     >
                       <Plus className="w-3.5 h-3.5" /> Register MCP Server
                     </button>
@@ -2604,21 +2779,21 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
 
                   {/* Right Column: Registered MCP Server Cards */}
                   <div className="flex flex-col gap-4">
-                    <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold">
+                    <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold">
                       Active Registry Directory ({mcpServers.length})
                     </span>
 
                     {mcpServers.length === 0 ? (
-                      <div className="p-8 border-2 border-dashed border-[#141414]/30 text-center text-xs text-[#141414]/50 font-mono">
+                      <div className="p-8 border-2 border-dashed border-[#141414] dark:border-neutral-700/30 text-center text-xs text-[#141414] dark:text-neutral-200/50 font-mono">
                         No custom MCP contexts mounted. Put in parameters on the left to add search directories or database connectors!
                       </div>
                     ) : (
                       <div className="flex flex-col gap-3 max-h-96 overflow-y-auto pr-1">
                         {mcpServers.map(server => (
-                          <div key={server.id} className="bg-white border-2 border-[#141414] p-4 flex flex-col justify-between gap-3 brutalist-shadow-sm">
+                          <div key={server.id} className="bg-white border-2 border-[#141414] dark:border-neutral-700 p-4 flex flex-col justify-between gap-3 brutalist-shadow-sm">
                             <div className="flex justify-between items-start">
                               <div>
-                                <h4 className="font-mono font-bold text-xs uppercase text-[#141414]">{server.name}</h4>
+                                <h4 className="font-mono font-bold text-xs uppercase text-[#141414] dark:text-neutral-200">{server.name}</h4>
                                 <span className={`inline-block px-1.5 py-0.2 text-[8px] font-mono font-extrabold uppercase mt-1 border ${
                                   server.status === "connected"
                                     ? "bg-emerald-100 text-emerald-800 border-emerald-500"
@@ -2630,27 +2805,27 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                               <button
                                 type="button"
                                 onClick={() => handleDeleteMcpServer(server.id)}
-                                className="text-[#141414]/40 hover:text-red-700 cursor-pointer"
+                                className="text-[#141414] dark:text-neutral-200/40 hover:text-red-700 cursor-pointer"
                                 title="Remove MCP registry"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </div>
 
-                            <div className="font-mono text-[10px] text-[#141414]/70 bg-[#D6D5D1]/30 p-2 border border-[#141414]/10 rounded-none break-all whitespace-pre-wrap leading-normal">
+                            <div className="font-mono text-[10px] text-[#141414] dark:text-neutral-200/70 bg-[#D6D5D1] dark:bg-neutral-700/30 p-2 border border-[#141414] dark:border-neutral-700/10 rounded-none break-all whitespace-pre-wrap leading-normal">
                               <div><span className="font-bold">Command/SSE:</span> {server.commandOrUrl}</div>
                               {server.args && <div><span className="font-bold">Args:</span> {server.args}</div>}
                             </div>
 
-                            <div className="flex justify-between items-center border-t border-[#141414]/15 pt-2.5">
+                            <div className="flex justify-between items-center border-t border-[#141414] dark:border-neutral-700/15 pt-2.5">
                               <span className="text-[8px] font-mono opacity-50 uppercase">Type: {server.type} protocol</span>
                               <button
                                 type="button"
                                 onClick={() => toggleMcpServerConnection(server.id)}
-                                className={`text-[10px] font-mono font-bold uppercase py-1 px-3 border border-[#141414] transition-all cursor-pointer ${
+                                className={`text-[10px] font-mono font-bold uppercase py-1 px-3 border border-[#141414] dark:border-neutral-700 transition-all cursor-pointer ${
                                   server.status === "connected"
-                                    ? "bg-[#141414] text-white hover:bg-red-700 hover:text-white"
-                                    : "bg-[#F27D26] text-[#141414] hover:bg-[#141414] hover:text-[#E4E3E0]"
+                                    ? "bg-[#141414] dark:bg-[#1f1f1f] text-white hover:bg-red-700 hover:text-white"
+                                    : "bg-[#F27D26] text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f] hover:text-[#E4E3E0] dark:text-[#a0a0a0]"
                                 }`}
                               >
                                 {server.status === "connected" ? "Disconnect" : "Connect"}
@@ -2665,72 +2840,72 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
               </div>
 
               {/* Custom Plugins Desk */}
-              <div className="bg-[#F5F4F0] border-2 border-[#141414] p-6 rounded-none brutalist-shadow select-none">
-                <div className="flex items-center gap-3 border-b-2 border-[#141414] pb-4 mb-6">
+              <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-6 rounded-none brutalist-shadow select-none">
+                <div className="flex items-center gap-3 border-b-2 border-[#141414] dark:border-neutral-700 pb-4 mb-6">
                   <Briefcase className="w-6 h-6 text-[#F27D26]" />
                   <div>
-                    <h2 className="font-serif italic font-extrabold text-lg text-[#141414]">Registered Extension Plugins & API Middleware</h2>
-                    <p className="text-[10px] uppercase text-[#141414]/60 font-mono font-bold">Extend landing page publishing routines with third-party automation webhooks</p>
+                    <h2 className="font-serif italic font-extrabold text-lg text-[#141414] dark:text-neutral-200">Registered Extension Plugins & API Middleware</h2>
+                    <p className="text-[10px] uppercase text-[#141414] dark:text-neutral-200/60 font-mono font-bold">Extend landing page publishing routines with third-party automation webhooks</p>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
                   {/* Left Column: Register Plugin */}
-                  <form onSubmit={handleAddCustomPlugin} className="flex flex-col gap-5 bg-[#D6D5D1] p-5 rounded-none border-2 border-[#141414]">
-                    <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold">
+                  <form onSubmit={handleAddCustomPlugin} className="flex flex-col gap-5 bg-[#D6D5D1] dark:bg-neutral-700 p-5 rounded-none border-2 border-[#141414] dark:border-neutral-700">
+                    <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold">
                       Register Plugin Extension
                     </span>
 
                     <div className="grid grid-cols-3 gap-2">
                       <div className="col-span-2">
-                        <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">Extension Name</label>
+                        <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">Extension Name</label>
                         <input
                           type="text"
                           placeholder="e.g. Shopify Exporter"
                           value={newPlugin.name}
                           onChange={e => setNewPlugin({ ...newPlugin, name: e.target.value })}
-                          className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] font-mono focus:outline-none focus:bg-[#E4E3E0]/25 font-bold"
+                          className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-mono focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/25 font-bold"
                           required
                         />
                       </div>
                       <div>
-                        <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">Version</label>
+                        <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">Version</label>
                         <input
                           type="text"
                           placeholder="1.0.0"
                           value={newPlugin.version}
                           onChange={e => setNewPlugin({ ...newPlugin, version: e.target.value })}
-                          className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] font-mono focus:outline-none focus:bg-[#E4E3E0]/25 font-bold"
+                          className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-mono focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/25 font-bold"
                         />
                       </div>
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">Webhook URI Endpoint</label>
+                      <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">Webhook URI Endpoint</label>
                       <input
                         type="text"
                         placeholder="e.g. https://api.brand.com/publish-extension"
                         value={newPlugin.endpoint}
                         onChange={e => setNewPlugin({ ...newPlugin, endpoint: e.target.value })}
-                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] font-mono focus:outline-none focus:bg-[#E4E3E0]/25 font-bold"
+                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-mono focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/25 font-bold"
                         required
                       />
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-mono font-extrabold text-[#141414]/90 mb-1.5 uppercase font-bold">Description context notes</label>
+                      <label className="block text-[10px] font-mono font-extrabold text-[#141414] dark:text-neutral-200/90 mb-1.5 uppercase font-bold">Description context notes</label>
                       <input
                         type="text"
                         placeholder="Auto export landing pages directly to Shopify store"
                         value={newPlugin.description}
                         onChange={e => setNewPlugin({ ...newPlugin, description: e.target.value })}
-                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] rounded-none text-[#141414] font-sans focus:outline-none focus:bg-[#E4E3E0]/25 font-semibold"
+                        className="w-full text-xs py-2.5 px-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-sans focus:outline-none focus:bg-[#E4E3E0] dark:bg-neutral-900/25 font-semibold"
                       />
                     </div>
 
                     <button
                       type="submit"
-                      className="w-full py-2.5 px-4 bg-[#141414] text-[#E4E3E0] hover:bg-[#F27D26] hover:text-[#141414] font-bold text-xs rounded-none transition-all flex items-center justify-center gap-2 border-2 border-[#141414] font-mono uppercase cursor-pointer"
+                      className="w-full py-2.5 px-4 bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] hover:bg-[#F27D26] hover:text-[#141414] dark:text-neutral-200 font-bold text-xs rounded-none transition-all flex items-center justify-center gap-2 border-2 border-[#141414] dark:border-neutral-700 font-mono uppercase cursor-pointer"
                     >
                       <Plus className="w-3.5 h-3.5" /> Initialize Plugin
                     </button>
@@ -2738,25 +2913,25 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
 
                   {/* Right Column: Registered Plugin Extension lists */}
                   <div className="flex flex-col gap-4">
-                    <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold">
+                    <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold">
                       Active Plugin Extensions ({customPlugins.length})
                     </span>
 
                     {customPlugins.length === 0 ? (
-                      <div className="p-8 border-2 border-dashed border-[#141414]/30 text-center text-xs text-[#141414]/50 font-mono">
+                      <div className="p-8 border-2 border-dashed border-[#141414] dark:border-neutral-700/30 text-center text-xs text-[#141414] dark:text-neutral-200/50 font-mono">
                         No custom extension hooks mounted yet. Configure on the left to activate third-party CMS exporters or media publishers!
                       </div>
                     ) : (
                       <div className="flex flex-col gap-3 max-h-96 overflow-y-auto pr-1">
                         {customPlugins.map(plugin => (
-                          <div key={plugin.id} className="bg-white border-2 border-[#141414] p-4 flex flex-col justify-between gap-3 brutalist-shadow-sm">
+                          <div key={plugin.id} className="bg-white border-2 border-[#141414] dark:border-neutral-700 p-4 flex flex-col justify-between gap-3 brutalist-shadow-sm">
                             <div className="flex justify-between items-start">
                               <div>
-                                <h4 className="font-mono font-bold text-xs uppercase text-[#141414]">{plugin.name} <span className="text-[9px] text-[#141414]/60 font-normal font-sans">v{plugin.version}</span></h4>
+                                <h4 className="font-mono font-bold text-xs uppercase text-[#141414] dark:text-neutral-200">{plugin.name} <span className="text-[9px] text-[#141414] dark:text-neutral-200/60 font-normal font-sans">v{plugin.version}</span></h4>
                                 <span className={`inline-block px-1.5 py-0.2 text-[8px] font-mono font-extrabold uppercase mt-1 border ${
                                   plugin.status === "active"
                                     ? "bg-emerald-100 text-emerald-800 border-emerald-500"
-                                    : "bg-[#D6D5D1] text-[#141414] border-gray-400"
+                                    : "bg-[#D6D5D1] dark:bg-neutral-700 text-[#141414] dark:text-neutral-200 border-gray-400"
                                 }`}>
                                   Status: {plugin.status}
                                 </span>
@@ -2764,7 +2939,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                               <button
                                 type="button"
                                 onClick={() => handleDeleteCustomPlugin(plugin.id)}
-                                className="text-[#141414]/40 hover:text-red-700 cursor-pointer"
+                                className="text-[#141414] dark:text-neutral-200/40 hover:text-red-700 cursor-pointer"
                                 title="Delete extension plugin"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
@@ -2772,20 +2947,20 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                             </div>
 
                             {plugin.description && (
-                              <p className="text-[10px] text-[#141414]/75 font-sans italic">{plugin.description}</p>
+                              <p className="text-[10px] text-[#141414] dark:text-neutral-200/75 font-sans italic">{plugin.description}</p>
                             )}
-                            <div className="font-mono text-[9px] text-[#141414]/60 truncate bg-[#D6D5D1]/35 p-2 border border-[#141414]/10 select-all">
+                            <div className="font-mono text-[9px] text-[#141414] dark:text-neutral-200/60 truncate bg-[#D6D5D1] dark:bg-neutral-700/35 p-2 border border-[#141414] dark:border-neutral-700/10 select-all">
                               {plugin.endpoint}
                             </div>
 
-                            <div className="flex justify-end items-center border-t border-[#141414]/15 pt-2.5">
+                            <div className="flex justify-end items-center border-t border-[#141414] dark:border-neutral-700/15 pt-2.5">
                               <button
                                 type="button"
                                 onClick={() => toggleCustomPluginActivity(plugin.id)}
-                                className={`text-[10px] font-mono font-bold uppercase py-1 px-3 border border-[#141414] transition-all cursor-pointer ${
+                                className={`text-[10px] font-mono font-bold uppercase py-1 px-3 border border-[#141414] dark:border-neutral-700 transition-all cursor-pointer ${
                                   plugin.status === "active"
-                                    ? "bg-[#141414] text-white hover:bg-gray-700"
-                                    : "bg-emerald-700 text-[#E4E3E0] hover:bg-[#141414] hover:text-[#E4E3E0]"
+                                    ? "bg-[#141414] dark:bg-[#1f1f1f] text-white hover:bg-gray-700"
+                                    : "bg-emerald-700 text-[#E4E3E0] dark:text-[#a0a0a0] hover:bg-[#141414] dark:bg-[#1f1f1f] hover:text-[#E4E3E0] dark:text-[#a0a0a0]"
                                 }`}
                               >
                                 {plugin.status === "active" ? "Deactivate" : "Activate"}
@@ -2800,13 +2975,13 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
             <div className="max-w-6xl mx-auto flex flex-col gap-6 w-full px-2">
               
               {/* Operator Tab Piles */}
-              <div className="flex gap-2.5 border-b-2 border-[#141414] pb-4">
+              <div className="flex gap-2.5 border-b-2 border-[#141414] dark:border-neutral-700 pb-4">
                 <button
                   onClick={() => setExecutiveViewMode("dashboard")}
-                  className={`px-5 py-3 font-mono font-extrabold text-xs uppercase tracking-wide border-2 border-[#141414] transition-all cursor-pointer flex items-center gap-2 ${
+                  className={`px-5 py-3 font-mono font-extrabold text-xs uppercase tracking-wide border-2 border-[#141414] dark:border-neutral-700 transition-all cursor-pointer flex items-center gap-2 ${
                     executiveViewMode === "dashboard"
-                      ? "bg-[#141414] text-[#E4E3E0] brutalist-shadow-sm"
-                      : "bg-[#F5F4F0] text-[#141414] hover:bg-[#141414]/5"
+                      ? "bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] brutalist-shadow-sm"
+                      : "bg-[#F5F4F0] dark:bg-neutral-800 text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f]/5"
                   }`}
                 >
                   <Cpu className="w-4 h-4 text-[#F27D26]" />
@@ -2814,10 +2989,10 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                 </button>
                 <button
                   onClick={() => setExecutiveViewMode("specs")}
-                  className={`px-5 py-3 font-mono font-extrabold text-xs uppercase tracking-wide border-2 border-[#141414] transition-all cursor-pointer flex items-center gap-2 ${
+                  className={`px-5 py-3 font-mono font-extrabold text-xs uppercase tracking-wide border-2 border-[#141414] dark:border-neutral-700 transition-all cursor-pointer flex items-center gap-2 ${
                     executiveViewMode === "specs"
-                      ? "bg-[#141414] text-[#E4E3E0] brutalist-shadow-sm"
-                      : "bg-[#F5F4F0] text-[#141414] hover:bg-[#141414]/5"
+                      ? "bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] brutalist-shadow-sm"
+                      : "bg-[#F5F4F0] dark:bg-neutral-800 text-[#141414] dark:text-neutral-200 hover:bg-[#141414] dark:bg-[#1f1f1f]/5"
                   }`}
                 >
                   <BookOpen className="w-4 h-4 text-[#F27D26]" />
@@ -2831,36 +3006,36 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                   
                   {/* System Overview Widgets */}
                   <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                    <div className="bg-white border-2 border-[#141414] p-4 brutalist-shadow-xs relative">
-                      <span className="text-[9px] font-mono text-[#141414]/55 uppercase font-bold block mb-1">Missions Dispatched</span>
-                      <span className="text-2xl font-mono font-black text-[#141414] tracking-tight">{executiveStats?.total_goals ?? executiveGoals.length ?? 0}</span>
-                      <span className="absolute right-3.5 bottom-3 text-[#141414]/20"><Plus className="w-6 h-6" /></span>
+                    <div className="bg-white border-2 border-[#141414] dark:border-neutral-700 p-4 brutalist-shadow-xs relative">
+                      <span className="text-[9px] font-mono text-[#141414] dark:text-neutral-200/55 uppercase font-bold block mb-1">Missions Dispatched</span>
+                      <span className="text-2xl font-mono font-black text-[#141414] dark:text-neutral-200 tracking-tight">{executiveStats?.total_goals ?? executiveGoals.length ?? 0}</span>
+                      <span className="absolute right-3.5 bottom-3 text-[#141414] dark:text-neutral-200/20"><Plus className="w-6 h-6" /></span>
                     </div>
-                    <div className="bg-[#FFFCE8] border-2 border-[#141414] p-4 brutalist-shadow-xs relative">
+                    <div className="bg-[#FFFCE8] border-2 border-[#141414] dark:border-neutral-700 p-4 brutalist-shadow-xs relative">
                       <span className="text-[9px] font-mono text-amber-950 uppercase font-bold block mb-1">Active Pipeline Jobs</span>
                       <span className="text-2xl font-mono font-black text-amber-950 tracking-tight">{executiveStats?.executing_tasks || 0}</span>
-                      <span className="absolute right-3.5 bottom-3 text-[#141414]/20"><Activity className="w-6 h-6 text-[#F27D26]" /></span>
+                      <span className="absolute right-3.5 bottom-3 text-[#141414] dark:text-neutral-200/20"><Activity className="w-6 h-6 text-[#F27D26]" /></span>
                     </div>
-                    <div className="bg-[#EBFDF5] border-2 border-[#141414] p-4 brutalist-shadow-xs relative">
+                    <div className="bg-[#EBFDF5] border-2 border-[#141414] dark:border-neutral-700 p-4 brutalist-shadow-xs relative">
                       <span className="text-[9px] font-mono text-emerald-950 uppercase font-bold block mb-1">Worker Jobs Met</span>
                       <span className="text-2xl font-mono font-black text-emerald-800 tracking-tight">{executiveStats?.completed_tasks || 0}</span>
-                      <span className="absolute right-3.5 bottom-3 text-[#141414]/20"><Check className="w-6 h-6" /></span>
+                      <span className="absolute right-3.5 bottom-3 text-[#141414] dark:text-neutral-200/20"><Check className="w-6 h-6" /></span>
                     </div>
-                    <div className="bg-[#EBEFFF] border-2 border-[#141414] p-4 brutalist-shadow-xs relative text-[#141414]">
-                      <span className="text-[9px] font-mono text-[#141414]/65 uppercase font-bold block mb-1">Active AI Operators</span>
-                      <span className="text-2xl font-mono font-black text-[#141414] tracking-tight">{executiveStats?.active_agents || (executiveAgents.length || 4)}</span>
-                      <span className="absolute right-3.5 bottom-3 text-[#141414]/20"><Cpu className="w-6 h-6" /></span>
+                    <div className="bg-[#EBEFFF] border-2 border-[#141414] dark:border-neutral-700 p-4 brutalist-shadow-xs relative text-[#141414] dark:text-neutral-200">
+                      <span className="text-[9px] font-mono text-[#141414] dark:text-neutral-200/65 uppercase font-bold block mb-1">Active AI Operators</span>
+                      <span className="text-2xl font-mono font-black text-[#141414] dark:text-neutral-200 tracking-tight">{executiveStats?.active_agents || (executiveAgents.length || 4)}</span>
+                      <span className="absolute right-3.5 bottom-3 text-[#141414] dark:text-neutral-200/20"><Cpu className="w-6 h-6" /></span>
                     </div>
                   </div>
 
                   {/* Active Warnings & Approvals */}
                   {executiveApprovals.length > 0 && (
-                    <div className="bg-[#FFEFE3] border-2 border-[#141414] p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                    <div className="bg-[#FFEFE3] border-2 border-[#141414] dark:border-neutral-700 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                       <div className="flex gap-3">
-                        <span className="p-1.5 bg-[#F27D26] text-white border border-[#141414] font-mono font-bold text-xs select-none">!</span>
+                        <span className="p-1.5 bg-[#F27D26] text-white border border-[#141414] dark:border-neutral-700 font-mono font-bold text-xs select-none">!</span>
                         <div>
-                          <p className="text-xs font-mono font-extrabold text-[#141414] uppercase tracking-wide">Administrative Action Needed ({executiveApprovals.length})</p>
-                          <p className="text-[11px] text-[#141414]/80 mt-0.5">The autonomous worker loop is paused waiting for strategic content and permission approvals.</p>
+                          <p className="text-xs font-mono font-extrabold text-[#141414] dark:text-neutral-200 uppercase tracking-wide">Administrative Action Needed ({executiveApprovals.length})</p>
+                          <p className="text-[11px] text-[#141414] dark:text-neutral-200/80 mt-0.5">The autonomous worker loop is paused waiting for strategic content and permission approvals.</p>
                         </div>
                       </div>
                       <div className="flex gap-2.5 shrink-0 w-full sm:w-auto">
@@ -2868,13 +3043,13 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                           <div key={req.id} className="flex gap-2 w-full">
                             <button
                               onClick={() => handleActionApproval(req.id, "approve")}
-                              className="w-full sm:w-auto px-4 py-2 bg-emerald-700 text-white font-mono font-extrabold text-[10px] uppercase tracking-wide border border-[#141414] hover:bg-emerald-800 cursor-pointer"
+                              className="w-full sm:w-auto px-4 py-2 bg-emerald-700 text-white font-mono font-extrabold text-[10px] uppercase tracking-wide border border-[#141414] dark:border-neutral-700 hover:bg-emerald-800 cursor-pointer"
                             >
                               Approve Dispatch
                             </button>
                             <button
                               onClick={() => handleActionApproval(req.id, "reject")}
-                              className="w-full sm:w-auto px-4 py-2 bg-red-700 text-white font-mono font-extrabold text-[10px] uppercase tracking-wide border border-[#141414] hover:bg-red-800 cursor-pointer"
+                              className="w-full sm:w-auto px-4 py-2 bg-red-700 text-white font-mono font-extrabold text-[10px] uppercase tracking-wide border border-[#141414] dark:border-neutral-700 hover:bg-red-800 cursor-pointer"
                             >
                               Reject
                             </button>
@@ -2891,8 +3066,8 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                     <div className="lg:col-span-4 flex flex-col gap-4">
                       
                       {/* Active AI Core Agents Grid */}
-                      <div className="bg-[#D6D5D1]/45 border-2 border-[#141414] p-4">
-                        <span className="text-[10px] font-mono text-[#141414] uppercase tracking-wider font-extrabold block mb-3">
+                      <div className="bg-[#D6D5D1] dark:bg-neutral-700/45 border-2 border-[#141414] dark:border-neutral-700 p-4">
+                        <span className="text-[10px] font-mono text-[#141414] dark:text-neutral-200 uppercase tracking-wider font-extrabold block mb-3">
                           AI Worker Registry ({executiveAgents.length || 4})
                         </span>
                         
@@ -2903,17 +3078,17 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                             { id: "marketer", name: "Content Marketer", role: "Tailwind & Copy Design", active: true },
                             { id: "evaluator", name: "SEO Evaluator", role: "Analytics", active: true }
                           ]).map(agent => (
-                            <div key={agent.id} className="bg-white border-2 border-[#141414] p-3 flex justify-between items-center bg-white">
+                            <div key={agent.id} className="bg-white border-2 border-[#141414] dark:border-neutral-700 p-3 flex justify-between items-center bg-white">
                               <div>
-                                <h4 className="font-mono font-extrabold text-xs uppercase flex items-center gap-1.5 text-[#141414]">
+                                <h4 className="font-mono font-extrabold text-xs uppercase flex items-center gap-1.5 text-[#141414] dark:text-neutral-200">
                                   {agent.name}
                                   <span className={`w-1.5 h-1.5 rounded-full ${agent.active ? "bg-emerald-600 animate-pulse" : "bg-gray-400"}`} />
                                 </h4>
-                                <span className="text-[9px] font-mono text-[#141414]/65 uppercase tracking-tight block">{agent.role}</span>
+                                <span className="text-[9px] font-mono text-[#141414] dark:text-neutral-200/65 uppercase tracking-tight block">{agent.role}</span>
                               </div>
                               <button
                                 onClick={() => handleToggleAgent(agent.id)}
-                                className={`px-2 py-0.5 text-[9px] font-mono font-black border border-[#141414] transition-all cursor-pointer ${
+                                className={`px-2 py-0.5 text-[9px] font-mono font-black border border-[#141414] dark:border-neutral-700 transition-all cursor-pointer ${
                                   agent.active 
                                     ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-200"
                                     : "bg-gray-100 text-gray-500 hover:bg-gray-200"
@@ -2927,32 +3102,32 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                       </div>
 
                       {/* Dispatch Goal Card */}
-                      <div className="bg-white border-2 border-[#141414] p-5 brutalist-shadow">
-                        <div className="mb-4 pb-2 border-b border-[#141414]/15">
-                          <h3 className="font-mono font-extrabold text-xs uppercase tracking-wide text-[#141414] flex items-center gap-2">
+                      <div className="bg-white border-2 border-[#141414] dark:border-neutral-700 p-5 brutalist-shadow">
+                        <div className="mb-4 pb-2 border-b border-[#141414] dark:border-neutral-700/15">
+                          <h3 className="font-mono font-extrabold text-xs uppercase tracking-wide text-[#141414] dark:text-neutral-200 flex items-center gap-2">
                             <Zap className="w-4 h-4 text-[#F27D26]" /> Define Operational Goal
                           </h3>
                         </div>
 
                         <form onSubmit={handleDispatchGoal} className="flex flex-col gap-4">
                           <div>
-                            <label className="block text-[9px] font-mono font-extrabold text-[#141414] uppercase tracking-wider mb-1.5 font-bold">Describe Strategic Mission</label>
+                            <label className="block text-[9px] font-mono font-extrabold text-[#141414] dark:text-neutral-200 uppercase tracking-wider mb-1.5 font-bold">Describe Strategic Mission</label>
                             <textarea
                               rows={2}
                               value={goalForm.description}
                               onChange={e => setGoalForm({ ...goalForm, description: e.target.value })}
-                              className="w-full text-xs py-2 px-3 bg-[#F5F4F0] border-2 border-[#141414] rounded-none text-[#141414] font-sans focus:outline-none focus:bg-white font-medium"
+                              className="w-full text-xs py-2 px-3 bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-sans focus:outline-none focus:bg-white font-medium"
                               required
                             />
                           </div>
 
                           <div>
-                            <label className="block text-[9px] font-mono font-extrabold text-[#141414] uppercase tracking-wider mb-1.5 font-bold">Pipeline Targets (One per line)</label>
+                            <label className="block text-[9px] font-mono font-extrabold text-[#141414] dark:text-neutral-200 uppercase tracking-wider mb-1.5 font-bold">Pipeline Targets (One per line)</label>
                             <textarea
                               rows={3}
                               value={goalForm.objectives}
                               onChange={e => setGoalForm({ ...goalForm, objectives: e.target.value })}
-                              className="w-full text-xs py-2 px-3 bg-[#F5F4F0] border-2 border-[#141414] rounded-none text-[#141414] font-mono font-bold focus:outline-none focus:bg-white"
+                              className="w-full text-xs py-2 px-3 bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 rounded-none text-[#141414] dark:text-neutral-200 font-mono font-bold focus:outline-none focus:bg-white"
                               required
                             />
                           </div>
@@ -2960,7 +3135,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                           <button
                             type="submit"
                             disabled={isCreatingGoal}
-                            className="w-full py-2.5 px-4 bg-[#F27D26] hover:bg-[#141414] text-[#141414] hover:text-white font-mono font-extrabold text-xs tracking-wider uppercase border-2 border-[#141414] transition-all brutalist-shadow-xs cursor-pointer flex items-center justify-center gap-2"
+                            className="w-full py-2.5 px-4 bg-[#F27D26] hover:bg-[#141414] dark:bg-[#1f1f1f] text-[#141414] dark:text-neutral-200 hover:text-white font-mono font-extrabold text-xs tracking-wider uppercase border-2 border-[#141414] dark:border-neutral-700 transition-all brutalist-shadow-xs cursor-pointer flex items-center justify-center gap-2"
                           >
                             {isCreatingGoal ? (
                               <>
@@ -2982,7 +3157,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                     {/* Right Panel: Plan Pipeline Actions */}
                     <div className="lg:col-span-8 flex flex-col gap-4">
                       
-                      <div className="bg-[#141414] text-[#E4E3E0] p-4 border-2 border-[#141414] flex justify-between items-center">
+                      <div className="bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] p-4 border-2 border-[#141414] dark:border-neutral-700 flex justify-between items-center">
                         <div>
                           <span className="text-[10px] font-mono text-[#F27D26] uppercase font-extrabold block font-bold">System Status: ONLINE</span>
                           <h3 className="font-serif italic font-extrabold text-white text-sm">Autonomous Task Orchestration Pipeline</h3>
@@ -2998,14 +3173,14 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
 
                       {/* Goal selector tab */}
                       {executiveGoals.length > 0 && (
-                        <div className="flex gap-1 overflow-x-auto bg-[#F5F4F0] border-2 border-[#141414] p-1.5">
+                        <div className="flex gap-1 overflow-x-auto bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-1.5">
                           {executiveGoals.map(goal => (
                             <button
                               key={goal.id}
                               onClick={() => setSelectedExecutiveGoalId(goal.id)}
-                              className={`px-3 py-1.5 font-mono text-[10px] uppercase font-bold text-[#141414] border shrink-0 cursor-pointer ${
+                              className={`px-3 py-1.5 font-mono text-[10px] uppercase font-bold text-[#141414] dark:text-neutral-200 border shrink-0 cursor-pointer ${
                                 selectedExecutiveGoalId === goal.id
-                                  ? "bg-white border-[#141414] brutalist-shadow-xs"
+                                  ? "bg-white border-[#141414] dark:border-neutral-700 brutalist-shadow-xs"
                                   : "bg-transparent border-transparent hover:bg-white/40"
                               }`}
                             >
@@ -3016,10 +3191,10 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                       )}
 
                       {/* Active execution plan tree */}
-                      <div className="bg-white border-2 border-[#141414] p-5">
+                      <div className="bg-white border-2 border-[#141414] dark:border-neutral-700 p-5">
                         
                         {!selectedExecutiveGoalId ? (
-                          <div className="p-12 text-center text-xs font-mono text-[#141414]/50 border-2 border-dashed border-[#141414]/25">
+                          <div className="p-12 text-center text-xs font-mono text-[#141414] dark:text-neutral-200/50 border-2 border-dashed border-[#141414] dark:border-neutral-700/25">
                             No goal dispatched yet. Set up a strategic automation goal on the left to review its corresponding agent execution sequence!
                           </div>
                         ) : (
@@ -3027,9 +3202,9 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                             
                             {/* Current selected goal outline */}
                             {executiveGoals.find(g => g.id === selectedExecutiveGoalId) && (
-                              <div className="bg-[#D6D5D1]/25 border-l-4 border-[#F27D26] p-3">
-                                <span className="text-[9px] font-mono text-[#141414]/65 uppercase font-black block">Active Goal Context ({selectedExecutiveGoalId})</span>
-                                <p className="text-xs font-serif italic font-extrabold text-[#141414] mt-1 capitalize leading-relaxed">
+                              <div className="bg-[#D6D5D1] dark:bg-neutral-700/25 border-l-4 border-[#F27D26] p-3">
+                                <span className="text-[9px] font-mono text-[#141414] dark:text-neutral-200/65 uppercase font-black block">Active Goal Context ({selectedExecutiveGoalId})</span>
+                                <p className="text-xs font-serif italic font-extrabold text-[#141414] dark:text-neutral-200 mt-1 capitalize leading-relaxed">
                                   "{executiveGoals.find(g => g.id === selectedExecutiveGoalId)?.description}"
                                 </p>
                               </div>
@@ -3041,15 +3216,17 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                                 tasks={activeExecutivePlan.tasks}
                                 onExecuteTask={handleExecuteTask}
                                 isExecutingTask={isExecutingTask}
+                                onUpdateTaskStatus={handleUpdateTaskStatus}
+                                taskExecutionResults={taskExecutionResults}
                               />
                             )}
 
                             {/* Plan tasks breakdown list */}
                             <div className="flex flex-col gap-3">
-                              <span className="text-[10px] font-mono uppercase font-black text-[#141414] block">Execution Blueprint Plan Tasks:</span>
+                              <span className="text-[10px] font-mono uppercase font-black text-[#141414] dark:text-neutral-200 block">Execution Blueprint Plan Tasks:</span>
                               
                               {(!activeExecutivePlan || !activeExecutivePlan.tasks || activeExecutivePlan.tasks.length === 0) ? (
-                                <div className="p-6 bg-[#F5F4F0] border-2 border-dashed border-[#141414]/15 rounded-none text-center text-xs font-mono text-[#141414]/55">
+                                <div className="p-6 bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-dashed border-[#141414] dark:border-neutral-700/15 rounded-none text-center text-xs font-mono text-[#141414] dark:text-neutral-200/55">
                                   No planner execution steps returned. Run the goal daemon to formulate tasks.
                                 </div>
                               ) : (
@@ -3059,12 +3236,12 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                                     const hasResult = taskExecutionResults[task.id];
                                     
                                     return (
-                                      <div key={task.id} className="border-2 border-[#141414] bg-[#F5F4F0] p-4 flex flex-col gap-3 brutalist-shadow-xs">
+                                      <div key={task.id} className="border-2 border-[#141414] dark:border-neutral-700 bg-[#F5F4F0] dark:bg-neutral-800 p-4 flex flex-col gap-3 brutalist-shadow-xs">
                                         
                                         <div className="flex justify-between items-start gap-3">
                                           <div>
-                                            <span className="text-[9px] font-mono text-[#141414]/60 uppercase font-bold">Step {idx + 1} — {task.type}</span>
-                                            <h4 className="font-mono font-extrabold text-xs uppercase text-[#141414] mt-0.5">{task.description}</h4>
+                                            <span className="text-[9px] font-mono text-[#141414] dark:text-neutral-200/60 uppercase font-bold">Step {idx + 1} — {task.type}</span>
+                                            <h4 className="font-mono font-extrabold text-xs uppercase text-[#141414] dark:text-neutral-200 mt-0.5">{task.description}</h4>
                                           </div>
                                           
                                           <span className={`inline-block px-2 py-0.5 text-[8px] font-mono font-extrabold border uppercase ${
@@ -3074,7 +3251,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                                               ? "bg-red-100 text-red-800 border-red-500"
                                               : task.status === "executing"
                                               ? "bg-amber-100 text-amber-800 border-amber-500 animate-pulse"
-                                              : "bg-white text-[#141414]/80 border-gray-400"
+                                              : "bg-white text-[#141414] dark:text-neutral-200/80 border-gray-400"
                                           }`}>
                                             {task.status}
                                           </span>
@@ -3082,14 +3259,14 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
 
                                         {/* Task parameters */}
                                         {task.parameters && Object.keys(task.parameters).length > 0 && (
-                                          <div className="bg-white border p-2 text-[9px] font-mono text-[#141414]/75 select-all overflow-x-auto max-w-full">
+                                          <div className="bg-white border p-2 text-[9px] font-mono text-[#141414] dark:text-neutral-200/75 select-all overflow-x-auto max-w-full">
                                             Params: {JSON.stringify(task.parameters, null, 1)}
                                           </div>
                                         )}
 
                                         {/* Trigger control */}
-                                        <div className="flex justify-between items-center border-t border-[#141414]/10 pt-3 mt-1.5/10">
-                                          <span className="text-[9px] font-mono text-[#141414]/55">Assigned Agent: <b className="uppercase text-[#141414]">{task.assigned_agent || "strategic-planner"}</b></span>
+                                        <div className="flex justify-between items-center border-t border-[#141414] dark:border-neutral-700/10 pt-3 mt-1.5/10">
+                                          <span className="text-[9px] font-mono text-[#141414] dark:text-neutral-200/55">Assigned Agent: <b className="uppercase text-[#141414] dark:text-neutral-200">{task.assigned_agent || "strategic-planner"}</b></span>
                                           
                                           <button
                                             onClick={() => handleExecuteTask(task.id)}
@@ -3098,8 +3275,8 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                                               task.status === "completed"
                                                 ? "bg-emerald-100 border-emerald-500 text-emerald-950 opacity-70"
                                                 : running
-                                                ? "bg-[#141414] text-white border-[#141414]"
-                                                : "bg-[#141414] text-white hover:bg-[#F27D26] hover:text-[#141414] border-[#141414]"
+                                                ? "bg-[#141414] dark:bg-[#1f1f1f] text-white border-[#141414] dark:border-neutral-700"
+                                                : "bg-[#141414] dark:bg-[#1f1f1f] text-white hover:bg-[#F27D26] hover:text-[#141414] dark:text-neutral-200 border-[#141414] dark:border-neutral-700"
                                             }`}
                                           >
                                             {running ? (
@@ -3123,7 +3300,7 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
 
                                         {/* Display result */}
                                         {hasResult && (
-                                          <div className="bg-white border-2 border-[#141414] p-3 text-[10px] font-mono leading-relaxed mt-2 text-[#141414]">
+                                          <div className="bg-white border-2 border-[#141414] dark:border-neutral-700 p-3 text-[10px] font-mono leading-relaxed mt-2 text-[#141414] dark:text-neutral-200">
                                             <span className="text-[9px] text-[#F27D26] uppercase font-bold block border-b pb-1 mb-2">📥 Worker Response Output Payload</span>
                                             <pre className="overflow-x-auto max-h-48 break-words select-all whitespace-pre-wrap">
                                               {JSON.stringify(hasResult.result, null, 2)}
@@ -3145,10 +3322,10 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
                       </div>
 
                       {/* Stream Live Logs */}
-                      <div className="bg-white border-2 border-[#141414] p-5">
-                        <span className="text-[10px] font-mono uppercase font-black text-[#141414] block mb-3">Live Log Stream (Telemetry logs):</span>
+                      <div className="bg-white border-2 border-[#141414] dark:border-neutral-700 p-5">
+                        <span className="text-[10px] font-mono uppercase font-black text-[#141414] dark:text-neutral-200 block mb-3">Live Log Stream (Telemetry logs):</span>
                         
-                        <div className="bg-[#141414] text-[#E4E3E0] p-4 text-[10px] font-mono h-60 overflow-y-auto flex flex-col gap-2 rounded-none border-2 border-[#141414]">
+                        <div className="bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] p-4 text-[10px] font-mono h-60 overflow-y-auto flex flex-col gap-2 rounded-none border-2 border-[#141414] dark:border-neutral-700">
                           {executiveLogs.map((log, idx) => (
                             <div key={idx} className="flex gap-2.5 items-start leading-relaxed font-bold border-b border-white/5 pb-1">
                               <span className="text-[#F27D26] shrink-0 font-normal">[{log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : "00:00:00"}]</span>
@@ -3174,45 +3351,45 @@ Use Tailwind CSS via CDN. Output absolute raw standalone HTML only inside <html>
 
               {/* VIEW 2: ORIGINAL ARCHITECTURE SPECS MANUAL */}
               {executiveViewMode === "specs" && (
-                <div className="bg-[#F5F4F0] border-2 border-[#141414] p-6 rounded-none brutalist-shadow relative overflow-hidden select-none">
+                <div className="bg-[#F5F4F0] dark:bg-neutral-800 border-2 border-[#141414] dark:border-neutral-700 p-6 rounded-none brutalist-shadow relative overflow-hidden select-none">
                   
-                  <div className="flex items-center gap-3 border-b-2 border-[#141414] pb-4 mb-6">
+                  <div className="flex items-center gap-3 border-b-2 border-[#141414] dark:border-neutral-700 pb-4 mb-6">
                     <BookOpen className="w-6 h-6 text-[#F27D26]" />
                     <div>
-                      <h2 className="font-serif italic font-extrabold text-lg text-[#141414]">Interface Improvement & Local Automation Blueprint</h2>
-                      <p className="text-[10px] uppercase text-[#141414]/60 font-mono font-bold">Modernizing static assets into a high-concurrency automated publishing machine</p>
+                      <h2 className="font-serif italic font-extrabold text-lg text-[#141414] dark:text-neutral-200">Interface Improvement & Local Automation Blueprint</h2>
+                      <p className="text-[10px] uppercase text-[#141414] dark:text-neutral-200/60 font-mono font-bold">Modernizing static assets into a high-concurrency automated publishing machine</p>
                     </div>
                   </div>
 
-                  <div className="flex flex-col gap-6 text-[#141414] text-xs leading-relaxed font-sans font-semibold">
+                  <div className="flex flex-col gap-6 text-[#141414] dark:text-neutral-200 text-xs leading-relaxed font-sans font-semibold">
                     
                     {/* Proposal Summary */}
-                    <div className="bg-[#D6D5D1] p-5 rounded-none border-2 border-[#141414]">
-                      <h3 className="font-mono font-extrabold text-sm text-[#141414] mb-2 flex items-center gap-2 uppercase tracking-wide font-bold">
+                    <div className="bg-[#D6D5D1] dark:bg-neutral-700 p-5 rounded-none border-2 border-[#141414] dark:border-neutral-700">
+                      <h3 className="font-mono font-extrabold text-sm text-[#141414] dark:text-neutral-200 mb-2 flex items-center gap-2 uppercase tracking-wide font-bold">
                         <Zap className="w-4 h-4 text-[#F27D26]" />
                         Executive Objective: From Client Static to Automated System
                       </h3>
-                      <p className="text-xs text-[#141414]/90 leading-relaxed font-sans font-medium">
-                        Your current local file <code className="bg-white px-1 py-0.5 border border-[#141414] font-bold">file:///C:/Windows/System32/GEMMA_INTERFACE.html</code> operates as a static client presentation layer. To automate affiliate posting and build landing pages seamlessly on your device, we propose creating custom <b>node-cron workflows</b> and <b>local static file-system hooks</b> that invoke your local Gemma backend fully offline.
+                      <p className="text-xs text-[#141414] dark:text-neutral-200/90 leading-relaxed font-sans font-medium">
+                        Your current local file <code className="bg-white px-1 py-0.5 border border-[#141414] dark:border-neutral-700 font-bold">file:///C:/Windows/System32/GEMMA_INTERFACE.html</code> operates as a static client presentation layer. To automate affiliate posting and build landing pages seamlessly on your device, we propose creating custom <b>node-cron workflows</b> and <b>local static file-system hooks</b> that invoke your local Gemma backend fully offline.
                       </p>
                     </div>
 
                     {/* Architecture Plan */}
                     <div className="font-mono">
-                      <h3 className="font-serif italic font-extrabold text-[#141414] text-base mb-3 leading-tight font-bold">
+                      <h3 className="font-serif italic font-extrabold text-[#141414] dark:text-neutral-200 text-base mb-3 leading-tight font-bold">
                         Phase 1: Automated Affiliate Dispatch Pipeline
                       </h3>
-                      <p className="text-xs text-[#141414]/80 mb-3 font-sans">
+                      <p className="text-xs text-[#141414] dark:text-neutral-200/80 mb-3 font-sans">
                         Instead of copy-pasting, execute a background scheduler that reads a local inventory ledger, queries your local Gemma model for optimized post variations, and appends them to automated publishing brokers.
                       </p>
 
-                      <div className="bg-white p-4 rounded-none border-2 border-[#141414]">
-                        <div className="flex items-center justify-between mb-2 pb-1 border-b border-[#141414]/10">
+                      <div className="bg-white p-4 rounded-none border-2 border-[#141414] dark:border-neutral-700">
+                        <div className="flex items-center justify-between mb-2 pb-1 border-b border-[#141414] dark:border-neutral-700/10">
                           <span className="text-[9px] font-mono text-[#F27D26] uppercase font-extrabold block font-bold">
                             POST_AUTOMATOR.JS (Local Daemon Process)
                           </span>
                         </div>
-                        <pre className="text-[11px] text-[#141414] font-mono overflow-x-auto leading-relaxed max-h-72 bg-[#F5F4F0] p-3 rounded-none font-bold">
+                        <pre className="text-[11px] text-[#141414] dark:text-neutral-200 font-mono overflow-x-auto leading-relaxed max-h-72 bg-[#F5F4F0] dark:bg-neutral-800 p-3 rounded-none font-bold">
 {`const fetch = require('node-fetch');
 const cron = require('node-cron');
 const fs = require('fs');
@@ -3259,23 +3436,23 @@ cron.schedule('30 8 * * *', async () => {
 
                     {/* Landing Pages Roadmap */}
                     <div>
-                      <h3 className="font-serif italic font-extrabold text-[#141414] text-base mb-3 leading-tight font-bold">
+                      <h3 className="font-serif italic font-extrabold text-[#141414] dark:text-neutral-200 text-base mb-3 leading-tight font-bold">
                         Phase 2: Local Static Auto-Generated Page Distribution
                       </h3>
-                      <p className="text-xs text-[#141414]/80 mb-3 leading-relaxed">
+                      <p className="text-xs text-[#141414] dark:text-neutral-200/80 mb-3 leading-relaxed">
                         To deploy Gemma-built landing assets instantaneously, run a delivery listener on your machine that maps custom path directories directly to your localized template compilation suite.
                       </p>
 
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 font-mono text-[11px] text-[#141414]/90 select-none font-bold">
-                        <div className="p-3 bg-white border-2 border-[#141414] rounded-none">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 font-mono text-[11px] text-[#141414] dark:text-neutral-200/90 select-none font-bold">
+                        <div className="p-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none">
                           <span className="text-[#F27D26] font-extrabold block mb-1 uppercase text-[10px]">1. Generate Path</span>
                           Sub-folders like <code>/dist/aura-ring</code> are written directly by your file generators dynamically.
                         </div>
-                        <div className="p-3 bg-white border-2 border-[#141414] rounded-none">
+                        <div className="p-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none">
                           <span className="text-[#F27D26] font-extrabold block mb-1 uppercase text-[10px]">2. Listen Host</span>
                           A light delivery daemon shares files over port <code>8080</code> for local cross-device test views instantly.
                         </div>
-                        <div className="p-3 bg-white border-2 border-[#141414] rounded-none">
+                        <div className="p-3 bg-white border-2 border-[#141414] dark:border-neutral-700 rounded-none">
                           <span className="text-[#F27D26] font-extrabold block mb-1 uppercase text-[10px]">3. Deploy Publish</span>
                           A simple sync hook dispatches generated code updates straight to standard deployment pipelines on commit.
                         </div>
@@ -3294,11 +3471,56 @@ cron.schedule('30 8 * * *', async () => {
             </div>
           )}
 
+          {/* TAB 5: GOOGLE DRIVE CLOUD INTERFACE */}
+          {activeTab === "drive" && (
+            <div className="flex flex-col gap-6">
+              {/* Header details */}
+              <div className="bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] p-6 border-2 border-[#141414] dark:border-neutral-700 brutalist-shadow-xs flex flex-col md:flex-row items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <Cloud className="w-5 h-5 text-[#F27D26]" />
+                    <span className="font-mono font-bold text-xs uppercase tracking-widest text-[#F27D26]">Enterprise Suite Integration</span>
+                  </div>
+                  <h1 className="font-serif italic font-extrabold text-2xl tracking-tight text-white">Google Drive Backup Explorer</h1>
+                  <p className="font-mono text-[10px] uppercase text-[#E4E3E0] dark:text-[#a0a0a0]/70 mt-1">
+                    Manage templates, store copies, backup generated affiliate landing sheets and sync with your cloud drive.
+                  </p>
+                </div>
+              </div>
+
+              {/* Google Drive explorer module */}
+              <GoogleDriveExplorer 
+                currentPost={generatedPost}
+                currentPostName={affiliateForm.productName ? `${affiliateForm.productName.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_post.txt` : undefined}
+                currentHtml={generatedHtml || landingHtmlEditor}
+                currentHtmlName={landingForm.offerName ? `${landingForm.offerName.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_landing.html` : undefined}
+                onImportHtml={(html) => {
+                  setGeneratedHtml(html);
+                  setLandingHtmlEditor(html);
+                  // Populate landing form fields to match imported landing page safely
+                  setLandingForm(prev => ({
+                    ...prev,
+                    offerName: "Imported Google Drive Document",
+                    valueProp: "Loaded from Google Drive backup explorer"
+                  }));
+                }}
+                onImportPost={(post) => {
+                  setGeneratedPost(post);
+                  // Populate affiliate form elements safely
+                  setAffiliateForm(prev => ({
+                    ...prev,
+                    productName: "Imported Google Drive Document",
+                    productDescription: "Loaded from Google Drive backup explorer"
+                  }));
+                }}
+              />
+            </div>
+          )}
         </main>
       </div>
 
       {/* Main Status Footer bar */}
-      <footer className="bg-[#141414] text-[#E4E3E0] py-4 px-6 border-t-2 border-[#141414] font-mono text-[10px] flex flex-col sm:flex-row items-center justify-between gap-2 uppercase tracking-wide select-none">
+      <footer className="bg-[#141414] dark:bg-[#1f1f1f] text-[#E4E3E0] dark:text-[#a0a0a0] py-4 px-6 border-t-2 border-[#141414] dark:border-neutral-700 font-mono text-[10px] flex flex-col sm:flex-row items-center justify-between gap-2 uppercase tracking-wide select-none">
         <div className="flex items-center gap-2">
           <span>© Gemma Workstation Suite — High Density Swiss OS v1.2</span>
         </div>

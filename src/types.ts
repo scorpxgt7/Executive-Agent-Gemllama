@@ -29,6 +29,8 @@ export interface LandingPageCampaign {
   features: string;
   audience: string;
   styleTheme: "Slate SaaS" | "Emerald E-Commerce" | "Amber Creative" | "Midnight Premium";
+  affiliateLink?: string;
+  enableLeadCapture?: boolean;
   generatedHtml?: string;
   createdAt: string;
 }
